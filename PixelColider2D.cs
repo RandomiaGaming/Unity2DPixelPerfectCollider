@@ -50,6 +50,16 @@ public class PixelColider2D : MonoBehaviour
                 }
             }
         }
+        
+            List<Vector2> t = new List<Vector2>();
+            foreach(Vector2 point in newpoints)
+            {
+            Vector2 n = new Vector2();
+            n = point - TextureToCollider(sr.sprite.pivot, sr.sprite);
+            t.Add(n);
+            }
+        newpoints = t;
+        
         List<Vector2> input = newpoints;
         newpoints = new List<Vector2>();
         Vector2 currentpoint = input[0];
@@ -90,7 +100,7 @@ public class PixelColider2D : MonoBehaviour
             }
 
         }
-
+        
         pc.points = newpoints.ToArray();
     }
     public bool Contains(Vector2[] input, Vector2 contains)
