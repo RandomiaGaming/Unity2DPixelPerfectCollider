@@ -2,28 +2,16 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
+
 [RequireComponent(typeof(SpriteRenderer))]
 [RequireComponent(typeof(PolygonCollider2D))]
 public class PixelColider2D : MonoBehaviour
 {
-    private void OnDrawGizmos()
-    {
-        if (EditorPreview)
-        {
-            Regenerate();
-        }
-    }
-    private SpriteRenderer sr;
-    private PolygonCollider2D pc;
-    public bool EditorPreview = true;
-    private void Start()
-    {
-        Regenerate();
-    }
+
     public void Regenerate()
     {
-        sr = GetComponent<SpriteRenderer>();
-        pc = GetComponent<PolygonCollider2D>();
+        SpriteRenderer sr = GetComponent<SpriteRenderer>();
+        PolygonCollider2D pc = GetComponent<PolygonCollider2D>();
         List<Vector2> newpoints = new List<Vector2>();
         for (int height = 0; height < sr.sprite.texture.height; height++)
         {
@@ -136,5 +124,17 @@ public class PixelColider2D : MonoBehaviour
         pos.y /= texture.texture.height;
 
         return pos;
+    }
+    [CustomEditor(typeof(PixelColider2D))]
+    public class PixelColider2DEditor : Editor
+    {
+        public override void OnInspectorGUI()
+        {
+            if(GUILayout.Button("Regenerate Collider"))
+            {
+                PixelColider2D t = (PixelColider2D)target;
+                t.Regenerate();
+            }
+        }
     }
 }
