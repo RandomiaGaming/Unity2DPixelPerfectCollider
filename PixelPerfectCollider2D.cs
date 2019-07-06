@@ -173,19 +173,11 @@ public class PixelPerfectCollider2D : MonoBehaviour
     }
 
     //This function forces unity to allow us to read a texture.
-    private Texture2D ForceReadable(Texture2D original)
+    private Texture2D ForceReadable(Texture2D Original)
     {
-        //I barely understand this so thank you to Sergio Gomez for showing me this.
-        //Find his work here "https://support.unity3d.com/hc/en-us/articles/206486626-How-can-I-get-pixels-from-unreadable-textures".
-        Texture2D Copy = new Texture2D(original.width, original.height);
-        RenderTexture tmp = RenderTexture.GetTemporary(original.width, original.height, 0, RenderTextureFormat.Default, RenderTextureReadWrite.Linear);
-        Graphics.Blit(original, tmp);
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = tmp;
-        Copy.ReadPixels(new Rect(0, 0, tmp.width, tmp.height), 0, 0);
-        Copy.Apply();
-        RenderTexture.active = previous;
-        RenderTexture.ReleaseTemporary(tmp);
+        byte[] TextureData = Original.EncodeToPNG();
+        Texture2D Copy = new Texture2D(Original.width, Original.height);
+        ImageConversion.LoadImage(Copy, TextureData, false);
         return Copy;
     }
 }
