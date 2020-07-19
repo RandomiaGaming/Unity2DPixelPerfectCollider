@@ -1,13 +1,13 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
 using System;
 
 [RequireComponent(typeof(PolygonCollider2D))]
+[RequireComponent(typeof(SpriteRenderer))]
 public class PixelPerfectCollider2D : MonoBehaviour
 {
-    [Space]
     [Tooltip("All pixels with an alpha value greater than or equal to the AlphaThreshhold are considered solid.")]
     [Range(0, 1)]
     public float AlphaThreshhold = 0.5f;
