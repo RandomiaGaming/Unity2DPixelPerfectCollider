@@ -1,2 +1,2 @@
-# Unity-Pixel-Perfect-Collider-2D
-A simple component which generates pixel perfect colliders for 2D GameObjects within the unity game engine.  To use this component just add it to a GameObject which has a spriteRenderer component and polygonCollider2D component attatched, and it will fit the  polygonCollider2D to the sprite being displayed in the spriteRenderer component.  Note that the spriteRenderer's sprite must have read/write enabled or it will throw an error.
+# Unity2D Pixel Perfect Collider
+Unity2D Pixel Perfect Collider is a simple C# script that when added to a 2D GameObject in unity will create a pixel perfect polygon collider based off of that GameObject's sprite.
