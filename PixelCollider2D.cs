@@ -1,46 +1,53 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
-using System;
-
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
 
 public sealed class PixelCollider2D : MonoBehaviour
 {
-    [Range(0, 1)]
-    public float alphaCutoff = 0.5f;
+    [Range(0, 1)] public float alphaCutoff = 0.5f;
+
     public void Regenerate()
     {
         alphaCutoff = Mathf.Clamp(alphaCutoff, 0, 1);
         PolygonCollider2D PGC2D = GetComponent<PolygonCollider2D>();
         if (PGC2D == null)
         {
-            throw new Exception($"PixelCollider2D could not be regenerated because there is no PolygonCollider2D component on \"{gameObject.name}\".");
+            throw new Exception(
+                $"PixelCollider2D could not be regenerated because there is no PolygonCollider2D component on \"{gameObject.name}\".");
         }
+
         SpriteRenderer SR = GetComponent<SpriteRenderer>();
         if (SR == null)
         {
             PGC2D.pathCount = 0;
-            throw new Exception($"PixelCollider2D could not be regenerated because there is no SpriteRenderer component on \"{gameObject.name}\".");
+            throw new Exception(
+                $"PixelCollider2D could not be regenerated because there is no SpriteRenderer component on \"{gameObject.name}\".");
         }
+
         if (SR.sprite == null)
         {
             PGC2D.pathCount = 0;
             return;
         }
+
         if (SR.sprite.texture == null)
         {
             PGC2D.pathCount = 0;
             return;
         }
+
         if (SR.sprite.texture.isReadable == false)
         {
             PGC2D.pathCount = 0;
-            throw new Exception($"PixelCollider2D could not be regenerated because on \"{gameObject.name}\" because the sprite does not allow read/write operations.");
+            throw new Exception(
+                $"PixelCollider2D could not be regenerated because on \"{gameObject.name}\" because the sprite does not allow read/write operations.");
         }
+
         List<List<Vector2Int>> Pixel_Paths = new List<List<Vector2Int>>();
-        Pixel_Paths = Get_Unit_Paths(SR.sprite.texture, alphaCutoff);
+        Pixel_Paths = Get_Unit_Paths(TextureFromSprite(SR.sprite), alphaCutoff);
         Pixel_Paths = Simplify_Paths_Phase_1(Pixel_Paths);
         Pixel_Paths = Simplify_Paths_Phase_2(Pixel_Paths);
         List<List<Vector2>> World_Paths = new List<List<Vector2>>();
@@ -51,14 +58,17 @@ public sealed class PixelCollider2D : MonoBehaviour
             PGC2D.SetPath(p, World_Paths[p].ToArray());
         }
     }
+
     private List<List<Vector2>> Finalize_Paths(List<List<Vector2Int>> Pixel_Paths, Sprite sprite)
     {
+        var tex = TextureFromSprite(sprite);
+        
         Vector2 pivot = sprite.pivot;
         pivot.x *= Mathf.Abs(sprite.bounds.max.x - sprite.bounds.min.x);
-        pivot.x /= sprite.texture.width;
+        pivot.x /= tex.width;
         pivot.y *= Mathf.Abs(sprite.bounds.max.y - sprite.bounds.min.y);
-        pivot.y /= sprite.texture.height;
-
+        pivot.y /= tex.height;
+        
         List<List<Vector2>> Output = new List<List<Vector2>>();
         for (int p = 0; p < Pixel_Paths.Count; p++)
         {
@@ -67,16 +77,19 @@ public sealed class PixelCollider2D : MonoBehaviour
             {
                 Vector2 point = Pixel_Paths[p][o];
                 point.x *= Mathf.Abs(sprite.bounds.max.x - sprite.bounds.min.x);
-                point.x /= sprite.texture.width;
+                point.x /= tex.width;
                 point.y *= Mathf.Abs(sprite.bounds.max.y - sprite.bounds.min.y);
-                point.y /= sprite.texture.height;
+                point.y /= tex.height;
                 point -= pivot;
                 Current_List.Add(point);
             }
+
             Output.Add(Current_List);
         }
+
         return Output;
     }
+
     private static List<List<Vector2Int>> Simplify_Paths_Phase_1(List<List<Vector2Int>> Unit_Paths)
     {
         List<List<Vector2Int>> Output = new List<List<Vector2Int>>();
@@ -129,10 +142,13 @@ public sealed class PixelCollider2D : MonoBehaviour
                     }
                 }
             }
+
             Output.Add(Current_Path);
         }
+
         return Output;
     }
+
     private static List<List<Vector2Int>> Simplify_Paths_Phase_2(List<List<Vector2Int>> Input_Paths)
     {
         for (int pa = 0; pa < Input_Paths.Count; pa++)
@@ -148,6 +164,7 @@ public sealed class PixelCollider2D : MonoBehaviour
                 {
                     Start = Input_Paths[pa][po - 1];
                 }
+
                 Vector2Int End = new Vector2Int();
                 if (po == Input_Paths[pa].Count - 1)
                 {
@@ -157,6 +174,7 @@ public sealed class PixelCollider2D : MonoBehaviour
                 {
                     End = Input_Paths[pa][po + 1];
                 }
+
                 Vector2Int Current_Point = Input_Paths[pa][po];
                 Vector2 Direction1 = Current_Point - (Vector2)Start;
                 Direction1 /= Direction1.magnitude;
@@ -169,8 +187,10 @@ public sealed class PixelCollider2D : MonoBehaviour
                 }
             }
         }
+
         return Input_Paths;
     }
+
     private static List<List<Vector2Int>> Get_Unit_Paths(Texture2D texture, float alphaCutoff)
     {
         List<List<Vector2Int>> Output = new List<List<Vector2Int>>();
@@ -184,14 +204,17 @@ public sealed class PixelCollider2D : MonoBehaviour
                     {
                         Output.Add(new List<Vector2Int>() { new Vector2Int(x, y + 1), new Vector2Int(x + 1, y + 1) });
                     }
+
                     if (!pixelSolid(texture, new Vector2Int(x, y - 1), alphaCutoff))
                     {
                         Output.Add(new List<Vector2Int>() { new Vector2Int(x, y), new Vector2Int(x + 1, y) });
                     }
+
                     if (!pixelSolid(texture, new Vector2Int(x + 1, y), alphaCutoff))
                     {
                         Output.Add(new List<Vector2Int>() { new Vector2Int(x + 1, y), new Vector2Int(x + 1, y + 1) });
                     }
+
                     if (!pixelSolid(texture, new Vector2Int(x - 1, y), alphaCutoff))
                     {
                         Output.Add(new List<Vector2Int>() { new Vector2Int(x, y), new Vector2Int(x, y + 1) });
@@ -199,14 +222,17 @@ public sealed class PixelCollider2D : MonoBehaviour
                 }
             }
         }
+
         return Output;
     }
+
     private static bool pixelSolid(Texture2D texture, Vector2Int point, float alphaCutoff)
     {
         if (point.x < 0 || point.y < 0 || point.x >= texture.width || point.y >= texture.height)
         {
             return false;
         }
+
         float pixelAlpha = texture.GetPixel(point.x, point.y).a;
         if (alphaCutoff == 0)
         {
@@ -234,6 +260,23 @@ public sealed class PixelCollider2D : MonoBehaviour
         {
             return pixelAlpha >= alphaCutoff;
         }
+    }
+
+    private static Texture2D TextureFromSprite(Sprite sprite)
+    {
+        if (sprite.rect.width != sprite.texture.width)
+        {
+            Texture2D newText = new Texture2D((int)sprite.rect.width, (int)sprite.rect.height);
+            Color[] newColors = sprite.texture.GetPixels((int)sprite.textureRect.x,
+                (int)sprite.textureRect.y,
+                (int)sprite.textureRect.width,
+                (int)sprite.textureRect.height);
+            newText.SetPixels(newColors);
+            newText.Apply();
+            return newText;
+        }
+        else
+            return sprite.texture;
     }
 }
 
