@@ -1,0 +1,16 @@
+# Unity 2D Pixel Perfect Collider
+Unity 2D Pixel Perfect Collider is a simple C# script that can be added to any GameObject and will automatically form fit a PolygonCollider2D component to that GameObject's sprite.
+
+# Technical Information
+To use the PixelPerfectCollider2D component simply add it to a GameObject and press the Regenerate Collider button in the Unity inspector. This will automatically generate a path based on the current Texture2D of that GameObject's Sprite component and will then apply the generated path to that GameObject's PolygonCollider2D component. Note that while previous versions of this script required the chosen Sprite to have read/write enabled, newer versions do not. This is done by reading the asset's import path and then loading the associated image file with the System.Drawing.Bitmap class.
+
+For tilemaps the process is a little different due to the way tilemaps are implamented in Unity. While we could read each tile from the tilemap individually and generate a PolygonColider2D based off that information this would be quite slow and wouldn't take advantage of the work Unity has put into optimizing their tilemap system. Instead the recommended workflow is to use the default TilemapCollider2D component and then ensure the sprite shape for each tile is pixel perfect. Sprite shapes are a property of sprites in unity which can be edited with the sprite editor. This utility automatically edits them for you 
+
+# What is a SpriteShape and why do we use them?
+In Unity each image file is imported as a Sprite asset. These sprites have various settings and properties other than just the raw pixel data which help Unity know how they should be rendered and used by the game engine. One of these properties is the SpriteShape which for all intents and purposes is just the default shape a PolygonCollider2D component takes when acting as the colider for a given Sprite. By setting the SpriteShape of each of our assets to a pixel perfect shape we can enure that colliders are the correct shape for all GameObject's by default. Additionally this means that tiles in a tilemap will also use the correct collider shape. PixelColliders comes with a tool for setting sprite shapes which can be opened by selecting Windows>PixelSpriteImpo from there you can import sprites with pixel perfect SpriteShapes.
+
+# How are collider shapes generated?
+We don't use an official algorithem cause I'm not that smart but here's what I slapped together. First each pixel is determined to be either solid or non-solid based on it's opacity, color, or other factors. Next the algorithem scans line by line, left to right, top to bottom and combines adjacent solid pixels into larger solid rectangles
+
+# Readability
+In Unity each image file (.png, jpg, ext) is stored as a Sprite Asset. These assets contain the image data as well as settings about how the Sprite should be configured and used by your game. One of these settings is readability. This setting determines weather calls to Texture2D.GetPixel will fail. To enable readability for a texture find the image file in the Project window. Right click on it and select Properties. Then check the box labled Read/Write under the Advanced dropdown section. Finally don't forget to press Apply to save your changes.

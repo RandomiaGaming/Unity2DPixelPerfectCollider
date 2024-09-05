@@ -1,3 +1,44 @@
+// Select how you would like to handle unreadable Texture2Ds by uncommenting one of the following #define statements:
+
+// If a Texture2D has isReadable set to false then use the asset loader to
+// locate the file within the Assets folder from which the Texture2D was loaded
+// and read the pixel data directly from that file with System.IO.
+// This is the recommended behaviour because it always works without errors, however
+// it can be quite slow because loading the image from disk every time we want to
+// regenerate a PixelCollider2D is not optimal.
+#define OnUnreadableTexture_ReadFileDirectly
+
+// If a Texture2D has isReadable set to false then throw a System.Exception
+// to alert the user of the issue and allow them to fix it manually.
+// This option is great if you want to fix each issue one at a time, however
+// if you have hundreds of Texture2Ds this option can be time consuming.
+// #define OnUnreadableTexture_ThrowError
+
+// If a Texture2D has isReadable set to false then use the asset loader API to
+// change the asset's import settings to make the Texture2D readable from now on.
+// This solution offers the best preformance because after the asset import settings
+// are changed the problem is resolved, however it also makes perminant changes
+// to your Texture2D's import settings which can cause undesired behaviour. Always
+// take backups before selecting this option just in case.
+// #define OnUnreadableTexture_MakeTextureReadable
+
+
+
+
+
+// The following throws an error if no OnUnreadableTexture2D action was selected
+// or if more than one OnUnreadableTexture2D action was selected.
+#if (OnUnreadableTexture_ReadFileDirectly && OnUnreadableTexture_ThrowError) || (OnUnreadableTexture_ThrowError && OnUnreadableTexture_MakeTextureReadable) || (OnUnreadableTexture_MakeTextureReadable && OnUnreadableTexture_ReadFileDirectly)
+#error Only one OnUnreadableTexture action may be selected at a time.
+#endif
+#if !OnUnreadableTexture_ReadFileDirectly && !OnUnreadableTexture_ThrowError && !OnUnreadableTexture_MakeTextureReadable
+#error Please select one OnUnreadableTexture action so that PixelCollider2Ds known what to do if a Texture2D is unreadable.
+#endif
+
+
+
+
+
 using System.Collections.Generic;
 using UnityEngine;
 using System;
@@ -7,267 +48,246 @@ using UnityEditor;
 
 [RequireComponent(typeof(PolygonCollider2D))]
 [RequireComponent(typeof(SpriteRenderer))]
-public sealed class SpritePixelCollider2D : MonoBehaviour
+public sealed class PixelCollider2D : MonoBehaviour
 {
-    public enum RegenerationMode { Manual, Automatic, Continuous }
+    // Pixes are considered solid if their {Channel} is {Selector} {Threshold}.
+    public enum Channel : int
+    {
+        Alpha, Brightness, Red, Green, Blue
+    }
+    public Channel channel = Channel.Alpha;
+    public enum Selector : int
+    {
+        GreaterThan,
+        LessThan
+    }
+    public Selector selector = Selector.GreaterThan;
     [Range(0, 1)]
-    public float alphaCutoff = 0.5f;
-    public RegenerationMode regenerationMode = RegenerationMode.Automatic;
-    public void Start()
-    {
-        if (regenerationMode == RegenerationMode.Continuous || regenerationMode == RegenerationMode.Automatic)
-        {
-            Regenerate();
-        }
-    }
-    private void Update()
-    {
-        if (regenerationMode == RegenerationMode.Continuous)
-        {
-            Regenerate();
-        }
-        else if (regenerationMode == RegenerationMode.Automatic)
-        {
+    public float threshold = 0.5f;
 
-        }
-    }
+    private SpriteRenderer spriteRenderer = null;
+    private PolygonCollider2D polygonCollider = null;
+
     public void Regenerate()
     {
-        alphaCutoff = Mathf.Clamp(alphaCutoff, 0, 1);
-        PolygonCollider2D PGC2D = GetComponent<PolygonCollider2D>();
-        if (PGC2D == null)
+        threshold = Math.Clamp(threshold, 0.0f, 1.0f);
+        spriteRenderer = GetComponent<SpriteRenderer>();
+        if (spriteRenderer is null)
         {
-            throw new Exception($"PixelCollider2D could not be regenerated because there is no PolygonCollider2D component on \"{gameObject.name}\".");
         }
-        SpriteRenderer SR = GetComponent<SpriteRenderer>();
-        if (SR == null)
+        polygonCollider = GetComponent<PolygonCollider2D>();
+        if (polygonCollider is null)
         {
-            PGC2D.pathCount = 0;
-            throw new Exception($"PixelCollider2D could not be regenerated because there is no SpriteRenderer component on \"{gameObject.name}\".");
         }
-        if (SR.sprite == null)
+        Vector2[][] polygons = Trace(spriteRenderer.sprite);
+        polygonCollider.pathCount = polygons.Length;
+        for (int i = 0; i < polygons.Length; i++)
         {
-            PGC2D.pathCount = 0;
-            return;
-        }
-        if (SR.sprite.texture == null)
-        {
-            PGC2D.pathCount = 0;
-            return;
-        }
-        if (SR.sprite.texture.isReadable == false)
-        {
-            PGC2D.pathCount = 0;
-            throw new Exception($"PixelCollider2D could not be regenerated because on \"{gameObject.name}\" because the sprite does not allow read/write operations.");
-        }
-        List<List<Vector2Int>> Pixel_Paths = GetUnitPaths(SR.sprite.texture, alphaCutoff);
-        Pixel_Paths = SimplifyPathsPhase1(Pixel_Paths);
-        Pixel_Paths = SimplifyPathsPhase2(Pixel_Paths);
-        List<List<Vector2>> World_Paths = FinalizePaths(Pixel_Paths, SR.sprite);
-        PGC2D.pathCount = World_Paths.Count;
-        for (int p = 0; p < World_Paths.Count; p++)
-        {
-            PGC2D.SetPath(p, World_Paths[p].ToArray());
+            polygonCollider.SetPath(i, polygons[i]);
         }
     }
-    private List<List<Vector2>> FinalizePaths(List<List<Vector2Int>> Pixel_Paths, Sprite sprite)
+    public Vector2[][] Trace(Sprite sprite)
     {
-        Vector2 pivot = sprite.pivot;
-        pivot.x *= Mathf.Abs(sprite.bounds.max.x - sprite.bounds.min.x);
-        pivot.x /= sprite.texture.width;
-        pivot.y *= Mathf.Abs(sprite.bounds.max.y - sprite.bounds.min.y);
-        pivot.y /= sprite.texture.height;
+        Vector2Int[][] pixelPolygons = Trace(sprite.texture);
+        Vector2[][] polygons = new Vector2[pixelPolygons.Length][];
+        for (int i = 0; i < pixelPolygons.Length; i++)
+        {
+            polygons[i] = new Vector2[pixelPolygons[i].Length];
+            for (int j = 0; j < pixelPolygons[i].Length; j++)
+            {
+                // TODO implament an actual scaling function here.
+                polygons[i][j] = new Vector2(pixelPolygons[i][j].x, pixelPolygons[i][j].y);
+            }
+        }
+        return polygons;
+    }
+    public Vector2Int[][] Trace(Texture2D texture)
+    {
+        if (texture is null)
+        {
+            return new Vector2Int[0][];
+        }
+        if (!texture.isReadable)
+        {
+            texture = HandleUnreadableTexture(texture);
+        }
+        return TraceReadable(texture);
+    }
+    public Texture2D HandleUnreadableTexture(Texture2D texture)
+    {
+#if OnUnreadableTexture_ThrowError || !UNITY_EDITOR
+        throw new Exception($"Texture2D \"{texture.name}\" could not be read. For help see the Readability section in ReadMe.md ");
+#elif OnUnreadableTexture_ReadFileDirectly
+        Debug.LogWarning($"Texture2D \"{texture.name}\" could not be read. Reading file directly.");
+        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
+        byte[] rawTextureBytes = System.IO.File.ReadAllBytes(textureAssetPath);
+        // Note that the initial size of loadedTexture does not matter because LoadImage will overwrite it.
+        Texture2D loadedTexture = new Texture2D(1, 1);
+        texture.LoadImage(rawTextureBytes);
+        return loadedTexture;
+#elif OnUnreadableTexture_MakeTextureReadable
+        Debug.LogWarning($"Texture2D \"{texture.name}\" could not be read. Changing texture import settings.");
+        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
+        TextureImporter textureImporter = (TextureImporter)AssetImporter.GetAtPath(textureAssetPath);
+        textureImporter.isReadable = true;
+        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
+        Texture2D loadedTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(textureAssetPath);
+        return loadedTexture;
+#endif
+    }
+    private Vector2Int[][] TraceReadable(Texture2D readableTexture)
+    {
+        // TODO implament an actual tracing algorithem here.
+        /*
+        Should work by connecting unit line segments end to end left to right then up and down to create long vertical and horizontal segments.
+        Finally go one by one comparing each vertical segment with each horizontal one and connecting them end to end if possible.
+        Finally you are left with the finished polygons and can return.
+        Note use linked lists during the computation process because they are super fast for add and remove operations.
+        Convert to an array at the end only
+        Finally handle edge cases where corners overlap. These are really the only weird situations but ill figure it out.
+         */
+        return new Vector2Int[0][];
+    }
+    public bool IsPixelSolid(Color pixel)
+    {
+        float value;
+        switch (channel)
+        {
+            case Channel.Red:
+                value = pixel.r;
+                break;
+            case Channel.Green:
+                value = pixel.g;
+                break;
+            case Channel.Blue:
+                value = pixel.b;
+                break;
+            case Channel.Brightness:
+                value = (pixel.r + pixel.g + pixel.b) / 3.0f;
+                break;
+            default:
+                value = pixel.a;
+                break;
+        }
 
-        List<List<Vector2>> Output = new List<List<Vector2>>();
-        for (int p = 0; p < Pixel_Paths.Count; p++)
+        if (selector is Selector.LessThan)
         {
-            List<Vector2> Current_List = new List<Vector2>();
-            for (int o = 0; o < Pixel_Paths[p].Count; o++)
-            {
-                Vector2 point = Pixel_Paths[p][o];
-                point.x *= Mathf.Abs(sprite.bounds.max.x - sprite.bounds.min.x);
-                point.x /= sprite.texture.width;
-                point.y *= Mathf.Abs(sprite.bounds.max.y - sprite.bounds.min.y);
-                point.y /= sprite.texture.height;
-                point -= pivot;
-                Current_List.Add(point);
-            }
-            Output.Add(Current_List);
-        }
-        return Output;
-    }
-    private static List<List<Vector2Int>> SimplifyPathsPhase1(List<List<Vector2Int>> Unit_Paths)
-    {
-        List<List<Vector2Int>> Output = new List<List<Vector2Int>>();
-        while (Unit_Paths.Count > 0)
-        {
-            List<Vector2Int> Current_Path = new List<Vector2Int>(Unit_Paths[0]);
-            Unit_Paths.RemoveAt(0);
-            bool Keep_Looping = true;
-            while (Keep_Looping)
-            {
-                Keep_Looping = false;
-                for (int p = 0; p < Unit_Paths.Count; p++)
-                {
-                    if (Current_Path[Current_Path.Count - 1] == Unit_Paths[p][0])
-                    {
-                        Keep_Looping = true;
-                        Current_Path.RemoveAt(Current_Path.Count - 1);
-                        Current_Path.AddRange(Unit_Paths[p]);
-                        Unit_Paths.RemoveAt(p);
-                        p--;
-                    }
-                    else if (Current_Path[0] == Unit_Paths[p][Unit_Paths[p].Count - 1])
-                    {
-                        Keep_Looping = true;
-                        Current_Path.RemoveAt(0);
-                        Current_Path.InsertRange(0, Unit_Paths[p]);
-                        Unit_Paths.RemoveAt(p);
-                        p--;
-                    }
-                    else
-                    {
-                        List<Vector2Int> Flipped_Path = new List<Vector2Int>(Unit_Paths[p]);
-                        Flipped_Path.Reverse();
-                        if (Current_Path[Current_Path.Count - 1] == Flipped_Path[0])
-                        {
-                            Keep_Looping = true;
-                            Current_Path.RemoveAt(Current_Path.Count - 1);
-                            Current_Path.AddRange(Flipped_Path);
-                            Unit_Paths.RemoveAt(p);
-                            p--;
-                        }
-                        else if (Current_Path[0] == Flipped_Path[Flipped_Path.Count - 1])
-                        {
-                            Keep_Looping = true;
-                            Current_Path.RemoveAt(0);
-                            Current_Path.InsertRange(0, Flipped_Path);
-                            Unit_Paths.RemoveAt(p);
-                            p--;
-                        }
-                    }
-                }
-            }
-            Output.Add(Current_Path);
-        }
-        return Output;
-    }
-    private static List<List<Vector2Int>> SimplifyPathsPhase2(List<List<Vector2Int>> Input_Paths)
-    {
-        for (int pa = 0; pa < Input_Paths.Count; pa++)
-        {
-            for (int po = 0; po < Input_Paths[pa].Count; po++)
-            {
-                Vector2Int Start = new Vector2Int();
-                if (po == 0)
-                {
-                    Start = Input_Paths[pa][Input_Paths[pa].Count - 1];
-                }
-                else
-                {
-                    Start = Input_Paths[pa][po - 1];
-                }
-                Vector2Int End = new Vector2Int();
-                if (po == Input_Paths[pa].Count - 1)
-                {
-                    End = Input_Paths[pa][0];
-                }
-                else
-                {
-                    End = Input_Paths[pa][po + 1];
-                }
-                Vector2Int Current_Point = Input_Paths[pa][po];
-                Vector2 Direction1 = Current_Point - (Vector2)Start;
-                Direction1 /= Direction1.magnitude;
-                Vector2 Direction2 = End - (Vector2)Start;
-                Direction2 /= Direction2.magnitude;
-                if (Direction1 == Direction2)
-                {
-                    Input_Paths[pa].RemoveAt(po);
-                    po--;
-                }
-            }
-        }
-        return Input_Paths;
-    }
-    private static List<List<Vector2Int>> GetUnitPaths(Texture2D texture, float alphaCutoff)
-    {
-        List<List<Vector2Int>> Output = new List<List<Vector2Int>>();
-        for (int x = 0; x < texture.width; x++)
-        {
-            for (int y = 0; y < texture.height; y++)
-            {
-                if (PixelIsSolid(texture, new Vector2Int(x, y), alphaCutoff))
-                {
-                    if (!PixelIsSolid(texture, new Vector2Int(x, y + 1), alphaCutoff))
-                    {
-                        Output.Add(new List<Vector2Int>() { new Vector2Int(x, y + 1), new Vector2Int(x + 1, y + 1) });
-                    }
-                    if (!PixelIsSolid(texture, new Vector2Int(x, y - 1), alphaCutoff))
-                    {
-                        Output.Add(new List<Vector2Int>() { new Vector2Int(x, y), new Vector2Int(x + 1, y) });
-                    }
-                    if (!PixelIsSolid(texture, new Vector2Int(x + 1, y), alphaCutoff))
-                    {
-                        Output.Add(new List<Vector2Int>() { new Vector2Int(x + 1, y), new Vector2Int(x + 1, y + 1) });
-                    }
-                    if (!PixelIsSolid(texture, new Vector2Int(x - 1, y), alphaCutoff))
-                    {
-                        Output.Add(new List<Vector2Int>() { new Vector2Int(x, y), new Vector2Int(x, y + 1) });
-                    }
-                }
-            }
-        }
-        return Output;
-    }
-    private static bool PixelIsSolid(Texture2D texture, Vector2Int point, float alphaCutoff)
-    {
-        if (point.x < 0 || point.y < 0 || point.x >= texture.width || point.y >= texture.height)
-        {
-            return false;
-        }
-        float pixelAlpha = texture.GetPixel(point.x, point.y).a;
-        if (alphaCutoff == 0)
-        {
-            if (pixelAlpha != 0)
-            {
-                return true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        else if (alphaCutoff == 1)
-        {
-            if (pixelAlpha == 1)
-            {
-                return true;
-            }
-            else
-            {
-                return false;
-            }
+            return value < threshold;
         }
         else
         {
-            return pixelAlpha >= alphaCutoff;
+            return value > threshold;
         }
     }
 }
 
+
+
+
+
+/*
+This custom inspector adds the "Regenerate Collider" button in the Unity editor
+for PixelCollider2D components as well as other pretty menu's in the Unity inspector.
+*/
 #if UNITY_EDITOR
-[CustomEditor(typeof(SpritePixelCollider2D))]
-public class SpritePixelColider2DEditor : Editor
+[CustomEditor(typeof(PixelCollider2D))]
+public class PixelCollider2DEditor : Editor
 {
     public override void OnInspectorGUI()
     {
-        base.OnInspectorGUI();
-        SpritePixelCollider2D PC2D = (SpritePixelCollider2D)target;
+        PixelCollider2D pixelCollider2D = (PixelCollider2D)target;
+        GUILayout.BeginHorizontal(GUILayout.ExpandWidth(false));
+        GUILayout.Label("Pixes are considered solid if their ", GUILayout.ExpandWidth(false));
+        if (EditorGUIUtility.currentViewWidth <= 525.0f)
+        {
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal(GUILayout.ExpandWidth(false));
+        }
+        pixelCollider2D.channel = GUILayoutDropdown(pixelCollider2D.channel, "PixelCollider2DEditor.ChannelDropdown");
+        GUILayout.Label(" is ", GUILayout.ExpandWidth(false));
+        pixelCollider2D.selector = GUILayoutDropdown(pixelCollider2D.selector, "PixelCollider2DEditor.SelectorDropdown");
+        GUILayout.Label(" ", GUILayout.ExpandWidth(false));
+        pixelCollider2D.threshold = Mathf.Clamp(EditorGUILayout.DelayedFloatField(pixelCollider2D.threshold, GUILayout.ExpandWidth(false), GUILayout.MaxWidth(90.0f)), 0.0f, 1.0f);
+        if (EditorGUIUtility.currentViewWidth <= 675.0f)
+        {
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal(GUILayout.ExpandWidth(false));
+            pixelCollider2D.threshold = GUILayout.HorizontalSlider(pixelCollider2D.threshold, 0.0f, 1.0f);
+            // Without this empty lable Unity gives my slider a height of 0 and it's invisible.
+            GUILayout.Label("", GUILayout.ExpandWidth(false), GUILayout.MaxWidth(0.0f));
+        }
+        else
+        {
+            GUILayout.Label(" ", GUILayout.ExpandWidth(false));
+            pixelCollider2D.threshold = GUILayout.HorizontalSlider(pixelCollider2D.threshold, 0.0f, 1.0f);
+            GUILayout.Label(" ", GUILayout.ExpandWidth(false));
+        }
+        GUILayout.EndHorizontal();
+        // This empty lable act's as a line break.
+        GUILayout.Label("", GUILayout.ExpandWidth(false), GUILayout.MaxWidth(0.0f));
         if (GUILayout.Button("Regenerate Collider"))
         {
-            PC2D.Regenerate();
+            pixelCollider2D.Regenerate();
         }
+    }
+    // Takes a string like "MyVariableNameHere" and turns it into "my variable name here ".
+    private string FormatDropdownOption(string value)
+    {
+        System.Text.StringBuilder output = new System.Text.StringBuilder(value.Length);
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (char.IsUpper(value[i]))
+            {
+                if (output.Length > 0)
+                {
+                    output.Append(' ');
+                }
+                output.Append(char.ToLower(value[i]));
+            }
+            else
+            {
+                output.Append(value[i]);
+            }
+        }
+        output.Append(' ');
+        return output.ToString();
+    }
+    // Dropdown ID is used to update the correct dropdown when a user selects an option.
+    // Because selecting a dropdown option invokes a callback we can't easily return
+    // the newly selected value from GUILayoutDropdown. Instead we add it to the list of
+    // dropdowns with updated statuses and force an editor refresh by calling Repaint();
+    private List<Tuple<string, object>> updatedDropdowns = new List<Tuple<string, object>>();
+    private T GUILayoutDropdown<T>(T value, string dropdownID) where T : struct, Enum
+    {
+        if (EditorGUILayout.DropdownButton(new GUIContent(FormatDropdownOption(value.ToString())), FocusType.Keyboard, GUILayout.ExpandWidth(false)))
+        {
+            GenericMenu menu = new GenericMenu();
+            foreach (T enumValue in Enum.GetValues(typeof(T)))
+            {
+                menu.AddItem(new GUIContent(FormatDropdownOption(enumValue.ToString())), value.Equals(enumValue), () =>
+                {
+                    lock (updatedDropdowns)
+                    {
+                        updatedDropdowns.Add(new Tuple<string, object>(dropdownID, enumValue));
+                    }
+                    Repaint();
+                });
+            }
+            menu.ShowAsContext();
+        }
+        lock (updatedDropdowns)
+        {
+            for (int i = 0; i < updatedDropdowns.Count; i++)
+            {
+                if (updatedDropdowns[i].Item1 == dropdownID)
+                {
+                    value = (T)updatedDropdowns[i].Item2;
+                    updatedDropdowns.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+        return value;
     }
 }
 #endif
