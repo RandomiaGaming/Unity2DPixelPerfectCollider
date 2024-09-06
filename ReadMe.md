@@ -4,7 +4,7 @@ Unity 2d pixel perfect collider is a simple c# script that comes jam packed with
 
 # How To Use
 
-To get started download ![Unity2DPixelPerfectCollider.cs](./Unity2DPixelPerfectCollider.cs) and save it into your unity project's assets folder. This one file contains all the code you will need. From there you can just add the PixelCollider2D component to a game object and press regenerate collider to automatically create a pixel perfect polygon collider for that game object.
+To get started download Unity2DPixelPerfectCollider.cs and save it into your unity project's assets folder. This one file contains all the code you will need. From there you can just add the PixelCollider2D component to a game object and press regenerate collider to automatically create a pixel perfect polygon collider for that game object.
 
 # What About Tilemaps?
 
