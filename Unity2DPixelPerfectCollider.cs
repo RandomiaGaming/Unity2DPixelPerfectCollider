@@ -11,7 +11,7 @@
 
 
 
-// The following preprocessor directives throw an error if no OnUnreadableTexture2D action is selected or if more than one is selected.
+// The following preprocessor directives throw an error if no OnUnreadableTexture action is selected or if more than one is selected.
 #if (OnUnreadableTexture_ReadFileDirectly && OnUnreadableTexture_ThrowError) || (OnUnreadableTexture_ThrowError && OnUnreadableTexture_MakeTextureReadable) || (OnUnreadableTexture_MakeTextureReadable && OnUnreadableTexture_ReadFileDirectly)
 #error Only one OnUnreadableTexture action may be selected at a time.
 #endif
@@ -37,7 +37,7 @@ public sealed class PixelCollider2D : MonoBehaviour
     private SpriteRenderer spriteRenderer = null;
     private PolygonCollider2D polygonCollider = null;
 
-    // Generates a pixel perfect outline of a sprite renderer's sprite and applies it as the collider shape of the polygon collider component.
+    // Generates a pixel perfect outline of a sprite renderer and applies it to a polygon collider.
     public void Regenerate()
     {
         pixelSolidCondition.Threshold = Mathf.Clamp01(pixelSolidCondition.Threshold);
@@ -243,7 +243,7 @@ public static class PixelTracingHelper
         if (EditorApplication.isPlaying)
         {
             // Additional information on the following warning:
-            // When reading the pixel data from a texture to generate a pixel perfect outline we run into troubles if Texture2D.isReadable == false. In that case one option is to read the pixel data from the image file directly (.png or .jpg). However this method only works in the Unity editor where asset source files are accessible. Once the game has been built in release mode the asset source files will no longer be available and this method will fail. As such it is recommended to use other options if you need to trace textures at runtime. Scroll to the very top of this file for other OnTextureUnreadable actions.
+            // When reading the pixel data from a texture to generate a pixel perfect outline we run into troubles if Texture2D.isReadable == false. In that case one option is to read the pixel data from the image file directly (.png or .jpg). However this method only works in the unity editor where asset source files are accessible. Once the game has been built in release mode the asset source files will no longer be available and this method will fail. As such it is recommended to use other options if you need to trace textures at runtime. Scroll to the very top of this file for other OnTextureUnreadable actions.
             Debug.LogWarning("Texture was read directly from the asset file during runtime. This only works in debug builds and is considered unstable.");
         }
         byte[] rawTextureBytes = System.IO.File.ReadAllBytes(textureAssetPath);
@@ -290,7 +290,7 @@ public static class PixelTracingHelper
         }
     }
 
-    // Traces a pixel perfect outline of a given Texture2D. Unlike the public version of TraceTexture this method requires that the texture be readable and that rect not be null. This method contains the actual algorithm implementation.
+    // Traces a pixel perfect outline of a given texture. Unlike the public version of TraceTexture this method requires that the texture be readable and that rect not be null. This method contains the actual algorithm implementation.
     private static Vector2Int[][] TraceTextureInternal(Texture2D texture, PixelSolidCondition pixelSolidCondition, RectInt rect)
     {
         // KNOWN ISSUE
@@ -313,9 +313,6 @@ public static class PixelTracingHelper
         {
             solidityMap[i] = pixelSolidCondition.IsPixelSolid(pixelData[i]);
         }
-
-        System.Diagnostics.Stopwatch stopwatch = new System.Diagnostics.Stopwatch();
-        stopwatch.Start();
 
         // Cache the width and height of our rect for faster access
         int width = rect.width;
@@ -496,9 +493,6 @@ public static class PixelTracingHelper
                 currentNode = currentNode.Next;
             }
         }
-
-        stopwatch.Stop();
-        Debug.Log($"Tracing took {stopwatch.ElapsedTicks} ticks or {stopwatch.Elapsed.TotalSeconds} seconds.");
 
         return polygonsArray;
     }
@@ -748,7 +742,7 @@ public class PixelPhysicsShapeEditor : EditorWindow
 }
 #endif
 
-// This helper class contains many useful methods for creating menus in the Unity editor.
+// This helper class contains many useful methods for creating menus in the unity editor.
 #if UNITY_EDITOR
 public static class GUILayoutHelper
 {
