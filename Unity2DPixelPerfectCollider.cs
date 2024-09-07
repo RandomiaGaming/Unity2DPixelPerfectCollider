@@ -11,12 +11,21 @@
 
 
 
+// Uncomment the following to show gizmos displaying detailed debugging info for the underlying tracing algorithem. It is recommended to leave this disabled most of the time for preformance reasons.
+#define PIXEL_TRACING_DEBUGGER
+
+
+
 // The following preprocessor directives throw an error if no OnUnreadableTexture action is selected or if more than one is selected.
 #if (OnUnreadableTexture_ReadFileDirectly && OnUnreadableTexture_ThrowError) || (OnUnreadableTexture_ThrowError && OnUnreadableTexture_MakeTextureReadable) || (OnUnreadableTexture_MakeTextureReadable && OnUnreadableTexture_ReadFileDirectly)
 #error Only one OnUnreadableTexture action may be selected at a time.
 #endif
 #if !OnUnreadableTexture_ReadFileDirectly && !OnUnreadableTexture_ThrowError && !OnUnreadableTexture_MakeTextureReadable
 #error Please select an OnUnreadableTexture action.
+#endif
+// The following preprocessor directives throw an error if PIXEL_TRACING_DEBUGGER is used outside the unity editor.
+#if PIXEL_TRACING_DEBUGGER && !UNITY_EDITOR
+#error PIXEL_TRACING_DEBUGGER may only be specified within the unity editor.
 #endif
 
 // Note that trying to use the UnityEditor namespace in a release build causes errors. So the #if UNITY_EDITOR preprocessor directive is required to prevent this. Additionally preprocessor directives are used to exclude all editor code from release builds.
@@ -25,6 +34,9 @@ using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.U2D.Sprites;
+using Unity.VisualScripting;
+using static UnityEngine.GraphicsBuffer;
+using UnityEngine.UIElements;
 #endif
 
 // This component allows you to generate pixel perfect polygon colliders in one click!
@@ -66,7 +78,15 @@ public sealed class PixelCollider2D : MonoBehaviour
         {
             polygonCollider.SetPath(i, polygons[i]);
         }
+        polygonCollider.offset = Vector2.zero;
     }
+
+#if PIXEL_TRACING_DEBUGGER
+    private void OnDrawGizmosSelected()
+    {
+        PixelTracingDebugger.DrawGizmos();
+    }
+#endif
 }
 
 // Stores a conditional statement for determining if a pixel is solid.
@@ -135,6 +155,19 @@ public struct PixelSolidCondition
     }
 }
 
+// A struct for efficiently storing simple 2d line segments in pixel space.
+public struct LineSegment
+{
+    public Vector2Int Start;
+    public Vector2Int End;
+
+    public LineSegment(Vector2Int start, Vector2Int end)
+    {
+        Start = start;
+        End = end;
+    }
+}
+
 // A static helper class containing the actual pixel perfect outline tracing algorithm. All other components and classes make use of the PixelTracingHelper for their internal logic.
 public static class PixelTracingHelper
 {
@@ -191,6 +224,10 @@ public static class PixelTracingHelper
         float scale = 1.0f / sprite.pixelsPerUnit;
         float offsetX = -(sprite.pivot.x * scale);
         float offsetY = -(sprite.pivot.y * scale);
+#if PIXEL_COLLIDER_DEBUG
+        debugScale = scale;
+        debugOffset = new Vector3(offsetX, offsetY);
+#endif
         Vector2[][] polygons = new Vector2[pixelPolygons.Length][];
         for (int i = 0; i < pixelPolygons.Length; i++)
         {
@@ -274,28 +311,9 @@ public static class PixelTracingHelper
 #endif
     }
 
-    // Efficiently stores a simple 2D line segment in pixel space.
-    private struct LineSegment
-    {
-        public int StartX;
-        public int StartY;
-        public int EndX;
-        public int EndY;
-        public LineSegment(int startX, int startY, int endX, int endY)
-        {
-            StartX = startX;
-            StartY = startY;
-            EndX = endX;
-            EndY = endY;
-        }
-    }
-
     // Traces a pixel perfect outline of a given texture. Unlike the public version of TraceTexture this method requires that the texture be readable and that rect not be null. This method contains the actual algorithm implementation.
     private static Vector2Int[][] TraceTextureInternal(Texture2D texture, PixelSolidCondition pixelSolidCondition, RectInt rect)
     {
-        // KNOWN ISSUE
-        // Pixels which touch only on the corners cause the tracing algorithm to malfunction and generate unstable colliders which only work sometimes. A patch for this issue is planned for later this week.
-
         // Read all the pixels from the source image all at once. This is way faster than reading the pixels one at a time. Additionally if we are reading the whole texture we can save even more time by not specifying a rect.
         Color[] pixelData;
         if (rect.x == 0 && rect.y == 0 && rect.width == texture.width && rect.height == texture.height)
@@ -314,187 +332,402 @@ public static class PixelTracingHelper
             solidityMap[i] = pixelSolidCondition.IsPixelSolid(pixelData[i]);
         }
 
-        // Cache the width and height of our rect for faster access
+        // Cache the width and height of our rect for faster access.
         int width = rect.width;
-        int widthMinusOne = width - 1;
         int height = rect.height;
-        int heightMinusOne = height - 1;
 
-        // Add line segments for each border between a solid and non-solid pixel on the x-axis.
-        LineSegment currentLineSegment = new LineSegment(-1, -1, -1, -1);
-        LinkedList<LineSegment> horizontalLineSegments = new LinkedList<LineSegment>();
-        for (int y = 0; y <= height; y++)
+        // PHASE 1: Create line segments for each boarder between solid pixel and nonsolid pixel.
+        // Goofy means the left or up.
+        bool currentLineSegmentNull = true;
+        LineSegment currentLineSegment = new LineSegment();
+        LinkedList<LineSegment> rightLineSegments = new LinkedList<LineSegment>();
+        LinkedList<LineSegment> leftLineSegments = new LinkedList<LineSegment>();
+        LinkedList<LineSegment> upLineSegments = new LinkedList<LineSegment>();
+        LinkedList<LineSegment> downLineSegments = new LinkedList<LineSegment>();
+
+        // Add line segments for all the edges along the very bottom of the texture.
+        currentLineSegmentNull = true;
+        currentLineSegment.Start.y = 0;
+        currentLineSegment.End.y = 0;
+        for (int x = 0; x < width; x++)
         {
+            if (solidityMap[x]) // (x, 0)
+            {
+                if (currentLineSegmentNull)
+                {
+                    currentLineSegment.Start.x = x + 1;
+                    currentLineSegment.End.x = x;
+                    currentLineSegmentNull = false;
+                }
+                else
+                {
+                    currentLineSegment.Start.x++;
+                }
+            }
+            else if (!currentLineSegmentNull)
+            {
+                leftLineSegments.AddLast(currentLineSegment);
+                currentLineSegmentNull = true;
+            }
+        }
+        if (!currentLineSegmentNull)
+        {
+            leftLineSegments.AddLast(currentLineSegment);
+            currentLineSegmentNull = true;
+        }
+
+        // Add line segments for all the edges along the horizontal grid lines of the texture.
+        bool currentLineSegmentRight = false;
+        for (int y = 1; y < height; y++)
+        {
+            currentLineSegmentNull = true;
+            currentLineSegment.Start.y = y;
+            currentLineSegment.End.y = y;
             for (int x = 0; x < width; x++)
             {
-                bool createLineSegment = false;
-                if (y == 0 && solidityMap[(0 * width) + x])
+                if (!solidityMap[(y * width) + x] && solidityMap[((y - 1) * width) + x]) // !(x, y) (x, y - 1)
                 {
-                    createLineSegment = true;
-                }
-                else if (y == height && solidityMap[(heightMinusOne * width) + x])
-                {
-                    createLineSegment = true;
-                }
-                else if (y != 0 && y != height && solidityMap[((y - 1) * width) + x] != solidityMap[(y * width) + x])
-                {
-                    createLineSegment = true;
-                }
-
-                if (createLineSegment)
-                {
-                    if (currentLineSegment.StartX == -1)
+                    if (currentLineSegmentNull || !currentLineSegmentRight)
                     {
-                        currentLineSegment = new LineSegment(x, y, x + 1, y);
+                        if (!currentLineSegmentNull)
+                        {
+                            leftLineSegments.AddLast(currentLineSegment);
+                        }
+                        currentLineSegment.Start.x = x;
+                        currentLineSegment.End.x = x + 1;
+                        currentLineSegmentNull = false;
+                        currentLineSegmentRight = true;
                     }
                     else
                     {
-                        currentLineSegment.EndX = x + 1;
+                        currentLineSegment.End.x++;
                     }
                 }
-                else if (currentLineSegment.StartX != -1)
+                else if (solidityMap[(y * width) + x] && !solidityMap[((y - 1) * width) + x]) // (x, y) !(x, y - 1)
                 {
-                    horizontalLineSegments.AddLast(currentLineSegment);
-                    currentLineSegment = new LineSegment(-1, -1, -1, -1);
+                    if (currentLineSegmentNull || currentLineSegmentRight)
+                    {
+                        if (!currentLineSegmentNull)
+                        {
+                            rightLineSegments.AddLast(currentLineSegment);
+                        }
+                        currentLineSegment.Start.x = x + 1;
+                        currentLineSegment.End.x = x;
+                        currentLineSegmentNull = false;
+                        currentLineSegmentRight = false;
+                    }
+                    else
+                    {
+                        currentLineSegment.Start.x++;
+                    }
+                }
+                else if (!currentLineSegmentNull)
+                {
+                    if (currentLineSegmentRight)
+                    {
+                        rightLineSegments.AddLast(currentLineSegment);
+                    }
+                    else
+                    {
+                        leftLineSegments.AddLast(currentLineSegment);
+                    }
+                    currentLineSegmentNull = true;
                 }
             }
-            if (currentLineSegment.StartX != -1)
+            if (!currentLineSegmentNull)
             {
-                horizontalLineSegments.AddLast(currentLineSegment);
-                currentLineSegment = new LineSegment(-1, -1, -1, -1);
+                if (currentLineSegmentRight)
+                {
+                    rightLineSegments.AddLast(currentLineSegment);
+                }
+                else
+                {
+                    leftLineSegments.AddLast(currentLineSegment);
+                }
+                currentLineSegmentNull = true;
             }
         }
 
-        // Add line segments for each border between a solid and non-solid pixel on the y-axis.
-        currentLineSegment = new LineSegment(-1, -1, -1, -1);
-        LinkedList<LineSegment> verticalLineSegments = new LinkedList<LineSegment>();
-        for (int x = 0; x <= width; x++)
+        // Add line segments for all the edges along the very top of the texture.
+        currentLineSegmentNull = true;
+        currentLineSegment.Start.y = height;
+        currentLineSegment.End.y = height;
+        for (int x = 0; x < width; x++)
         {
-            for (int y = 0; y < height; y++)
+            if (solidityMap[((height - 1) * width) + x]) // (x, height - 1)
             {
-                bool createLineSegment = false;
-                if (x == 0 && solidityMap[(y * width) + 0])
+                if (currentLineSegmentNull)
                 {
-                    createLineSegment = true;
+                    currentLineSegment.Start.x = x;
+                    currentLineSegment.End.x = x + 1;
+                    currentLineSegmentNull = false;
                 }
-                else if (x == width && solidityMap[(y * width) + widthMinusOne])
+                else
                 {
-                    createLineSegment = true;
+                    currentLineSegment.End.x++;
                 }
-                else if (x != 0 && x != width && solidityMap[(y * width) + (x - 1)] != solidityMap[(y * width) + x])
-                {
-                    createLineSegment = true;
-                }
+            }
+            else if (!currentLineSegmentNull)
+            {
+                rightLineSegments.AddLast(currentLineSegment);
+                currentLineSegmentNull = true;
+            }
+        }
+        if (!currentLineSegmentNull)
+        {
+            rightLineSegments.AddLast(currentLineSegment);
+            currentLineSegmentNull = true;
+        }
 
-                if (createLineSegment)
+        // Add line segments for all the edges along the very left of the texture.
+        currentLineSegmentNull = true;
+        currentLineSegment.Start.x = 0;
+        currentLineSegment.End.x = 0;
+        for (int y = 0; y < height; y++)
+        {
+            if (solidityMap[y * width]) // (0, y)
+            {
+                if (currentLineSegmentNull)
                 {
-                    if (currentLineSegment.StartY == -1)
+                    currentLineSegment.Start.y = y;
+                    currentLineSegment.End.y = y + 1;
+                    currentLineSegmentNull = false;
+                }
+                else
+                {
+                    currentLineSegment.End.y++;
+                }
+            }
+            else if (!currentLineSegmentNull)
+            {
+                upLineSegments.AddLast(currentLineSegment);
+                currentLineSegmentNull = true;
+            }
+        }
+        if (!currentLineSegmentNull)
+        {
+            upLineSegments.AddLast(currentLineSegment);
+            currentLineSegmentNull = true;
+        }
+
+        // Add line segments for all the edges along the vertical grid lines of the texture.
+        bool currentLineSegmentUp = false;
+        for (int x = 1; x < width; x++)
+        {
+            currentLineSegmentNull = true;
+            currentLineSegment.Start.x = x;
+            currentLineSegment.End.x = x;
+            for (int y = 0; y < width; y++)
+            {
+                if (solidityMap[(y * width) + x] && !solidityMap[(y * width) + (x - 1)]) // (x, y) !(x - 1, y)
+                {
+                    if (currentLineSegmentNull || !currentLineSegmentUp)
                     {
-                        currentLineSegment = new LineSegment(x, y, x, y + 1);
+                        if (!currentLineSegmentNull)
+                        {
+                            downLineSegments.AddLast(currentLineSegment);
+                        }
+                        currentLineSegment.Start.y = y;
+                        currentLineSegment.End.y = y + 1;
+                        currentLineSegmentNull = false;
+                        currentLineSegmentUp = true;
                     }
                     else
                     {
-                        currentLineSegment.EndY = y + 1;
+                        currentLineSegment.End.y++;
                     }
                 }
-                else if (currentLineSegment.StartY != -1)
+                else if (!solidityMap[(y * width) + x] && solidityMap[(y * width) + (x - 1)]) // !(x, y) (x - 1, y)
                 {
-                    verticalLineSegments.AddLast(currentLineSegment);
-                    currentLineSegment = new LineSegment(-1, -1, -1, -1);
+                    if (currentLineSegmentNull || currentLineSegmentUp)
+                    {
+                        if (!currentLineSegmentNull)
+                        {
+                            upLineSegments.AddLast(currentLineSegment);
+                        }
+                        currentLineSegment.Start.y = y + 1;
+                        currentLineSegment.End.y = y;
+                        currentLineSegmentNull = false;
+                        currentLineSegmentUp = false;
+                    }
+                    else
+                    {
+                        currentLineSegment.Start.y++;
+                    }
+                }
+                else if (!currentLineSegmentNull)
+                {
+                    if (currentLineSegmentUp)
+                    {
+                        upLineSegments.AddLast(currentLineSegment);
+                    }
+                    else
+                    {
+                        downLineSegments.AddLast(currentLineSegment);
+                    }
+                    currentLineSegmentNull = true;
                 }
             }
-            if (currentLineSegment.StartY != -1)
+            if (!currentLineSegmentNull)
             {
-                verticalLineSegments.AddLast(currentLineSegment);
-                currentLineSegment = new LineSegment(-1, -1, -1, -1);
+                if (currentLineSegmentUp)
+                {
+                    upLineSegments.AddLast(currentLineSegment);
+                }
+                else
+                {
+                    downLineSegments.AddLast(currentLineSegment);
+                }
+                currentLineSegmentNull = true;
             }
         }
 
-        // Combine all the vertical and horizontal line segments into polygons.
+        // Add line segments for all the edges along the very right of the texture.
+        currentLineSegmentNull = true;
+        currentLineSegment.Start.x = width;
+        currentLineSegment.End.x = width;
+        for (int y = 0; y < height; y++)
+        {
+            if (solidityMap[(y * width) + (width - 1)]) // (width - 1, y)
+            {
+                if (currentLineSegmentNull)
+                {
+                    currentLineSegment.Start.y = y + 1;
+                    currentLineSegment.End.y = y;
+                    currentLineSegmentNull = false;
+                }
+                else
+                {
+                    currentLineSegment.Start.y++;
+                }
+            }
+            else if (!currentLineSegmentNull)
+            {
+                downLineSegments.AddLast(currentLineSegment);
+                currentLineSegmentNull = true;
+            }
+        }
+        if (!currentLineSegmentNull)
+        {
+            downLineSegments.AddLast(currentLineSegment);
+            currentLineSegmentNull = true;
+        }
+
+#if PIXEL_TRACING_DEBUGGER
+        PixelTracingDebugger.SendDebugInfo(texture, upLineSegments.ToArray(), downLineSegments.ToArray(), rightLineSegments.ToArray(), leftLineSegments.ToArray());
+#endif
+
+        // PHASE 2: Combine all the line segments into polygons.
         LinkedList<Vector2Int[]> polygons = new LinkedList<Vector2Int[]>();
-        while (horizontalLineSegments.Count > 0)
+        while (leftLineSegments.Count + rightLineSegments.Count > 0)
         {
             LinkedList<Vector2Int> currentPolygon = new LinkedList<Vector2Int>();
-            currentPolygon.AddLast(new Vector2Int(horizontalLineSegments.First.Value.StartX, horizontalLineSegments.First.Value.StartY));
-            currentPolygon.AddLast(new Vector2Int(horizontalLineSegments.First.Value.EndX, horizontalLineSegments.First.Value.EndY));
-            horizontalLineSegments.RemoveFirst();
+            currentPolygon.AddFirst(rightLineSegments.First.Value.Start);
+            currentPolygon.AddLast(rightLineSegments.First.Value.End);
+            rightLineSegments.RemoveFirst();
 
-            while (true)
+            // Goofy means the last line segment faces either up or left.
+            bool currentPolygonGoofy;
+            if (AddLineSegment(currentPolygon, downLineSegments))
             {
+                currentPolygonGoofy = false;
+            }
+            else
+            {
+                AddLineSegment(currentPolygon, upLineSegments);
+                currentPolygonGoofy = true;
+            }
+
+            while (currentPolygon.First.Value != currentPolygon.Last.Value)
+            {
+                if (currentPolygonGoofy)
                 {
-                    LinkedListNode<LineSegment> currentNode = verticalLineSegments.First;
-                    for (int i = 0; i < verticalLineSegments.Count; i++)
+                    if (AddLineSegment(currentPolygon, rightLineSegments))
                     {
-                        Vector2Int lastPointInCurrentPolygon = currentPolygon.Last.Value;
-                        LineSegment verticalLineSegment = currentNode.Value;
-                        if (verticalLineSegment.StartX == lastPointInCurrentPolygon.x && verticalLineSegment.StartY == lastPointInCurrentPolygon.y)
-                        {
-                            currentPolygon.AddLast(new Vector2Int(verticalLineSegment.EndX, verticalLineSegment.EndY));
-                            verticalLineSegments.Remove(currentNode);
-                            break;
-                        }
-                        else if (verticalLineSegment.EndX == lastPointInCurrentPolygon.x && verticalLineSegment.EndY == lastPointInCurrentPolygon.y)
-                        {
-                            currentPolygon.AddLast(new Vector2Int(verticalLineSegment.StartX, verticalLineSegment.StartY));
-                            verticalLineSegments.Remove(currentNode);
-                            break;
-                        }
-                        currentNode = currentNode.Next;
+                        currentPolygonGoofy = false;
+                    }
+                    else
+                    {
+                        AddLineSegment(currentPolygon, leftLineSegments);
+                        currentPolygonGoofy = true;
                     }
                 }
-
-                if (currentPolygon.First.Value.x == currentPolygon.Last.Value.x && currentPolygon.First.Value.y == currentPolygon.Last.Value.y)
+                else
                 {
-                    break;
-                }
-
-                {
-                    LinkedListNode<LineSegment> currentNode = horizontalLineSegments.First;
-                    for (int i = 0; i < horizontalLineSegments.Count; i++)
+                    if (AddLineSegment(currentPolygon, leftLineSegments))
                     {
-                        Vector2Int lastPointInCurrentPolygon = currentPolygon.Last.Value;
-                        LineSegment horizontalLineSegment = currentNode.Value;
-                        if (horizontalLineSegment.StartX == lastPointInCurrentPolygon.x && horizontalLineSegment.StartY == lastPointInCurrentPolygon.y)
-                        {
-                            currentPolygon.AddLast(new Vector2Int(horizontalLineSegment.EndX, horizontalLineSegment.EndY));
-                            horizontalLineSegments.Remove(currentNode);
-                            break;
-                        }
-                        else if (horizontalLineSegment.EndX == lastPointInCurrentPolygon.x && horizontalLineSegment.EndY == lastPointInCurrentPolygon.y)
-                        {
-                            currentPolygon.AddLast(new Vector2Int(horizontalLineSegment.StartX, horizontalLineSegment.StartY));
-                            horizontalLineSegments.Remove(currentNode);
-                            break;
-                        }
-                        currentNode = currentNode.Next;
+                        currentPolygonGoofy = true;
+                    }
+                    else
+                    {
+                        AddLineSegment(currentPolygon, rightLineSegments);
+                        currentPolygonGoofy = false;
+                    }
+                }
+                if (currentPolygonGoofy)
+                {
+                    if (AddLineSegment(currentPolygon, upLineSegments))
+                    {
+                        currentPolygonGoofy = true;
+                    }
+                    else
+                    {
+                        AddLineSegment(currentPolygon, downLineSegments);
+                        currentPolygonGoofy = false;
+                    }
+                }
+                else
+                {
+                    if (AddLineSegment(currentPolygon, downLineSegments))
+                    {
+                        currentPolygonGoofy = false;
+                    }
+                    else
+                    {
+                        AddLineSegment(currentPolygon, upLineSegments);
+                        currentPolygonGoofy = true;
                     }
                 }
             }
 
-            Vector2Int[] currentPolygonArray = new Vector2Int[currentPolygon.Count];
-            {
-                LinkedListNode<Vector2Int> currentNode = currentPolygon.First;
-                for (int i = 0; i < currentPolygon.Count; i++)
-                {
-                    currentPolygonArray[i] = currentNode.Value;
-                    currentNode = currentNode.Next;
-                }
-            }
-            polygons.AddLast(currentPolygonArray);
+            currentPolygon.RemoveLast();
+            polygons.AddLast(currentPolygon.ToArray());
         }
 
-        // Convert polygons linked list into normal array.
-        Vector2Int[][] polygonsArray = new Vector2Int[polygons.Count][];
+        return polygons.ToArray();
+    }
+
+    // Adds a new point to a given partial polygon by finding a line segment which can be added on to the existing path.
+    // Returns true if a line segment was added else returns false.
+    private static bool AddLineSegment(LinkedList<Vector2Int> partialPolygon, LinkedList<LineSegment> lineSegments)
+    {
+        Vector2Int lastPointInPolygon = partialPolygon.Last.Value;
+        LinkedListNode<LineSegment> currentNode = lineSegments.First;
+        for (int i = 0; i < lineSegments.Count; i++)
         {
-            LinkedListNode<Vector2Int[]> currentNode = polygons.First;
-            for (int i = 0; i < polygons.Count; i++)
+            LineSegment currentLineSegment = currentNode.Value;
+            if (currentLineSegment.Start == lastPointInPolygon)
             {
-                polygonsArray[i] = currentNode.Value;
-                currentNode = currentNode.Next;
+                partialPolygon.AddLast(currentLineSegment.End);
+                lineSegments.Remove(currentNode);
+                return true;
             }
+            currentNode = currentNode.Next;
         }
+        return false;
+    }
 
-        return polygonsArray;
+    // A very useful extension method for converting a linked list to a normal array.
+    public static T[] ToArray<T>(this LinkedList<T> list)
+    {
+        T[] output = new T[list.Count];
+        LinkedListNode<T> currentNode = list.First;
+        for (int i = 0; i < list.Count; i++)
+        {
+            output[i] = currentNode.Value;
+            currentNode = currentNode.Next;
+        }
+        return output;
     }
 }
 
@@ -534,7 +767,7 @@ public class PixelPhysicsShapeEditor : EditorWindow
             AssetGUID = assetGUID;
         }
     }
-    private readonly List<SelectedTextureInfo> selectedTextures = new List<SelectedTextureInfo>();
+    private readonly LinkedList<SelectedTextureInfo> selectedTextures = new LinkedList<SelectedTextureInfo>();
     private PixelSolidCondition pixelSolidCondition = PixelSolidCondition.Default;
     private Vector2 scrollPosition = Vector2.zero;
 
@@ -610,17 +843,20 @@ public class PixelPhysicsShapeEditor : EditorWindow
         }
         GUILayout.EndHorizontal();
 
-        for (int i = 0; i < selectedTextures.Count; i++)
         {
-            SelectedTextureInfo selectedTexture = selectedTextures[i];
-            GUILayout.BeginHorizontal(GUILayout.ExpandWidth(false));
-            GUILayout.Label($"{selectedTexture.Texture.name} ({selectedTexture.AssetPath})", GUILayout.ExpandWidth(true));
-            if (GUILayout.Button(" Remove ", GUILayout.ExpandWidth(false)))
+            LinkedListNode<SelectedTextureInfo> currentNode = selectedTextures.First;
+            for (int i = 0; i < selectedTextures.Count; i++)
             {
-                selectedTextures.RemoveAt(i);
-                i--;
+                SelectedTextureInfo selectedTexture = currentNode.Value;
+                GUILayout.BeginHorizontal(GUILayout.ExpandWidth(false));
+                GUILayout.Label($"{selectedTexture.Texture.name} ({selectedTexture.AssetPath})", GUILayout.ExpandWidth(true));
+                if (GUILayout.Button(" Remove ", GUILayout.ExpandWidth(false)))
+                {
+                    selectedTextures.Remove(currentNode);
+                }
+                GUILayout.EndHorizontal();
+                currentNode = currentNode.Next;
             }
-            GUILayout.EndHorizontal();
         }
 
         if (GUILayout.Button("Generate And Apply Physics Shapes"))
@@ -640,16 +876,20 @@ public class PixelPhysicsShapeEditor : EditorWindow
 
                 if (confirm)
                 {
-                    for (int i = 0; i < selectedTextures.Count; i++)
                     {
-                        SelectedTextureInfo selectedTexture = selectedTextures[i];
-                        try
+                        LinkedListNode<SelectedTextureInfo> currentNode = selectedTextures.First;
+                        for (int i = 0; i < selectedTextures.Count; i++)
                         {
-                            PixelTracingHelper.TraceAndApplyPhysicsShape(selectedTexture.Texture, pixelSolidCondition);
-                        }
-                        catch (System.Exception ex)
-                        {
-                            Debug.LogException(new System.Exception($"Failed to regenerate physics shape for texture {selectedTexture.Texture.name} at {selectedTexture.AssetPath} due to exception: {ex.Message}"));
+                            SelectedTextureInfo selectedTexture = currentNode.Value;
+                            try
+                            {
+                                PixelTracingHelper.TraceAndApplyPhysicsShape(selectedTexture.Texture, pixelSolidCondition);
+                            }
+                            catch (System.Exception ex)
+                            {
+                                Debug.LogException(new System.Exception($"Failed to regenerate physics shape for texture {selectedTexture.Texture.name} at {selectedTexture.AssetPath} due to exception: {ex.Message}"));
+                            }
+                            currentNode = currentNode.Next;
                         }
                     }
                     selectedTextures.Clear();
@@ -705,15 +945,19 @@ public class PixelPhysicsShapeEditor : EditorWindow
         }
         string droppedAssetPath = AssetDatabase.GetAssetPath(droppedTexture);
         GUID droppedAssetGUID = AssetDatabase.GUIDFromAssetPath(droppedAssetPath);
-        for (int i = 0; i < selectedTextures.Count; i++)
         {
-            if (selectedTextures[i].AssetGUID == droppedAssetGUID)
+            LinkedListNode<SelectedTextureInfo> currentNode = selectedTextures.First;
+            for (int i = 0; i < selectedTextures.Count; i++)
             {
-                // Don't add duplicate textures.
-                return;
+                if (currentNode.Value.AssetGUID == droppedAssetGUID)
+                {
+                    // Don't add duplicate textures.
+                    return;
+                }
+                currentNode = currentNode.Next;
             }
         }
-        selectedTextures.Add(new SelectedTextureInfo(droppedTexture, droppedAssetPath, droppedAssetGUID));
+        selectedTextures.AddFirst(new SelectedTextureInfo(droppedTexture, droppedAssetPath, droppedAssetGUID));
     }
     private void OnDropFolder(DefaultAsset droppedFolder)
     {
@@ -787,7 +1031,7 @@ public static class GUILayoutHelper
             DropdownID = dropdownID;
         }
     }
-    private static readonly List<DropdownUpdatePacket> updatedDropdowns = new List<DropdownUpdatePacket>();
+    private static readonly LinkedList<DropdownUpdatePacket> updatedDropdowns = new LinkedList<DropdownUpdatePacket>();
 
     // Creates a dropdown menu to select a value from a given enum.
     public static T EnumDropdown<T>(T value, Editor context, string dropdownID) where T : struct, System.Enum
@@ -830,7 +1074,7 @@ public static class GUILayoutHelper
                 {
                     lock (updatedDropdowns)
                     {
-                        updatedDropdowns.Add(new DropdownUpdatePacket(currentValue, context, dropdownID));
+                        updatedDropdowns.AddFirst(new DropdownUpdatePacket(currentValue, context, dropdownID));
                     }
                     context.GetType().GetMethod("Repaint").Invoke(context, null);
                 });
@@ -839,15 +1083,17 @@ public static class GUILayoutHelper
         }
         lock (updatedDropdowns)
         {
+            LinkedListNode<DropdownUpdatePacket> currentNode = updatedDropdowns.First;
             for (int i = 0; i < updatedDropdowns.Count; i++)
             {
-                DropdownUpdatePacket updatedDropdown = updatedDropdowns[i];
+                DropdownUpdatePacket updatedDropdown = currentNode.Value;
                 if (updatedDropdown.Context == context && updatedDropdown.DropdownID == dropdownID)
                 {
                     value = (T)updatedDropdown.NewValue;
-                    updatedDropdowns.RemoveAt(i);
+                    updatedDropdowns.Remove(currentNode);
                     break;
                 }
+                currentNode = currentNode.Next;
             }
         }
         return value;
@@ -889,6 +1135,90 @@ public static class GUILayoutHelper
             }
         }
         return stringBuilder.ToString();
+    }
+}
+#endif
+
+// The following is a set of debuggin gizmos which were super helpful when debuggin the PixelTracingHelper
+// however if you just want to use this script not work on improving it then this is probably useless to you
+// I recommend leaving PIXEL_COLLIDER_DEBUG disabled unless working on improving the algorithem.
+#if PIXEL_TRACING_DEBUGGER
+public static class PixelTracingDebugger
+{
+    private static Texture2D texture = null;
+    private static LineSegment[] upLineSegments = null;
+    private static LineSegment[] downLineSegments = null;
+    private static LineSegment[] rightLineSegments = null;
+    private static LineSegment[] leftLineSegments = null;
+
+    public static void SendDebugInfo(Texture2D texture, LineSegment[] upLineSegments, LineSegment[] downLineSegments, LineSegment[] rightLineSegments, LineSegment[] leftLineSegments)
+    {
+        PixelTracingDebugger.texture = texture;
+        PixelTracingDebugger.upLineSegments = upLineSegments;
+        PixelTracingDebugger.downLineSegments = downLineSegments;
+        PixelTracingDebugger.rightLineSegments = rightLineSegments;
+        PixelTracingDebugger.leftLineSegments = leftLineSegments;
+    }
+    public static void DrawGizmos()
+    {
+        if (texture == null)
+        {
+            return;
+        }
+
+        Color originalGizmosColor = Gizmos.color;
+        Gizmos.color = new Color(0.98823529411f, 0.42352941176f, 0.51764705882f, 1.0f);
+
+        Gizmos.DrawGUITexture(new Rect(0, texture.height, texture.width, -texture.height), texture);
+        for (int i = 0; i < upLineSegments.Length; i++)
+        {
+            DrawLineSegment(upLineSegments[i], 0);
+        }
+        for (int i = 0; i < downLineSegments.Length; i++)
+        {
+            DrawLineSegment(downLineSegments[i], 1);
+        }
+        for (int i = 0; i < rightLineSegments.Length; i++)
+        {
+            DrawLineSegment(rightLineSegments[i], 2);
+        }
+        for (int i = 0; i < leftLineSegments.Length; i++)
+        {
+            DrawLineSegment(leftLineSegments[i], 3);
+        }
+
+        Gizmos.color = originalGizmosColor;
+    }
+    private static void DrawLineSegment(LineSegment lineSegment, int arrowType)
+    {
+        const float dotSize = 0.1f;
+        const float halfArrowLength = 0.1f;
+
+        Vector3 start = new Vector3(lineSegment.Start.x, lineSegment.Start.y);
+        Vector3 end = new Vector3(lineSegment.End.x, lineSegment.End.y);
+        Gizmos.DrawLine(start, end);
+        Vector3 midpoint = start + ((end - start) / 2.0f);
+        Mesh arrow = new Mesh();
+        switch (arrowType)
+        {
+            case 0: // Up
+                arrow.vertices = new Vector3[] { midpoint + new Vector3(-halfArrowLength, -halfArrowLength), midpoint + new Vector3(0.0f, halfArrowLength), midpoint + new Vector3(halfArrowLength, -halfArrowLength) };
+                break;
+            case 1: // Down
+                arrow.vertices = new Vector3[] { midpoint + new Vector3(halfArrowLength, halfArrowLength), midpoint + new Vector3(0.0f, -halfArrowLength), midpoint + new Vector3(-halfArrowLength, halfArrowLength) };
+                break;
+            case 2: // Right
+                arrow.vertices = new Vector3[] { midpoint + new Vector3(-halfArrowLength, halfArrowLength), midpoint + new Vector3(halfArrowLength, 0.0f), midpoint + new Vector3(-halfArrowLength, -halfArrowLength) };
+                break;
+            default: // Left
+                arrow.vertices = new Vector3[] { midpoint + new Vector3(halfArrowLength, -halfArrowLength), midpoint + new Vector3(-halfArrowLength, 0.0f), midpoint + new Vector3(halfArrowLength, halfArrowLength) };
+                break;
+        }
+        arrow.triangles = new int[] { 0, 1, 2 };
+        arrow.RecalculateNormals();
+        Gizmos.DrawMesh(arrow);
+        Gizmos.DrawSphere(start, dotSize);
+        Gizmos.DrawSphere(end, dotSize);
     }
 }
 #endif
