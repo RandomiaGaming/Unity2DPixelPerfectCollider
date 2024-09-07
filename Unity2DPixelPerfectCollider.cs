@@ -1,18 +1,18 @@
 // Select how you would like to handle unreadable textures by uncommenting one of the following #define statements:
 
 // If a texture is unreadable then use the asset loader to locate the file within the assets folder and read the pixel data directly from the file with System.IO. This option is recommended because it always works, however it can be quite slow because loading the image from disk each time takes a while.
-// #define OnUnreadableTexture_ReadFileDirectly
+#define OnUnreadableTexture_ReadFileDirectly
 
 // If a texture is unreadable then throw a System.Exception. This option can generate a lot of errors since textures are not readable by default, however it gives the most user control.
 // #define OnUnreadableTexture_ThrowError
 
 // If a texture is unreadable then use the asset loader to change the texture's settings to enable read/write access. This option offers the best performance because it makes the texture readable from now on thereby fixing any future errors, however it makes permanent changes to your texture's settings which may cause other issues.
-#define OnUnreadableTexture_MakeTextureReadable
+// #define OnUnreadableTexture_MakeTextureReadable
 
 
 
 // Uncomment the following to show gizmos displaying detailed debugging info for the underlying tracing algorithem. It is recommended to leave this disabled most of the time for preformance reasons.
-#define PIXEL_TRACING_DEBUGGER
+// #define PIXEL_TRACING_DEBUGGER
 
 
 
@@ -34,9 +34,6 @@ using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.U2D.Sprites;
-using Unity.VisualScripting;
-using static UnityEngine.GraphicsBuffer;
-using UnityEngine.UIElements;
 #endif
 
 // This component allows you to generate pixel perfect polygon colliders in one click!
