@@ -11,9 +11,6 @@
 
 
 
-// Uncomment the following to show gizmos displaying detailed debugging info for the underlying tracing algorithem. It is recommended to leave this disabled most of the time for preformance reasons.
-// #define PIXEL_TRACING_DEBUGGER
-
 
 
 // The following preprocessor directives throw an error if no OnUnreadableTexture action is selected or if more than one is selected.
@@ -21,11 +18,7 @@
 #error Only one OnUnreadableTexture action may be selected at a time.
 #endif
 #if !OnUnreadableTexture_ReadFileDirectly && !OnUnreadableTexture_ThrowError && !OnUnreadableTexture_MakeTextureReadable
-#error Please select an OnUnreadableTexture action.
-#endif
-// The following preprocessor directives throw an error if PIXEL_TRACING_DEBUGGER is used outside the unity editor.
-#if PIXEL_TRACING_DEBUGGER && !UNITY_EDITOR
-#error PIXEL_TRACING_DEBUGGER may only be specified within the unity editor.
+#error Please select an OnUnreadableTexture action by uncommenting a #define statement at the very top of this file.
 #endif
 
 // Note that trying to use the UnityEditor namespace in a release build causes errors. So the #if UNITY_EDITOR preprocessor directive is required to prevent this. Additionally preprocessor directives are used to exclude all editor code from release builds.
@@ -41,6 +34,9 @@ using UnityEditor.U2D.Sprites;
 [RequireComponent(typeof(SpriteRenderer))]
 public sealed class PixelCollider2D : MonoBehaviour
 {
+    /* KNOWN ISSUE
+    PixelSolidConditions do not save between unity editor sessions. Yet
+    */
     public PixelSolidCondition pixelSolidCondition = PixelSolidCondition.Default;
 
     private SpriteRenderer spriteRenderer = null;
@@ -76,655 +72,6 @@ public sealed class PixelCollider2D : MonoBehaviour
             polygonCollider.SetPath(i, polygons[i]);
         }
         polygonCollider.offset = Vector2.zero;
-    }
-
-#if PIXEL_TRACING_DEBUGGER
-    private void OnDrawGizmosSelected()
-    {
-        PixelTracingDebugger.DrawGizmos();
-    }
-#endif
-}
-
-// Stores a conditional statement for determining if a pixel is solid.
-// PixelSolidConditions always come in the following form:
-// Pixels are considered solid if their {Channel} is {Condition} {Threshold}.
-// For example:
-// Pixels are considered solid if their alpha is greater than 0.5.
-public struct PixelSolidCondition
-{
-    public static readonly PixelSolidCondition Default = new PixelSolidCondition(ChannelType.Alpha, ConditionType.GreaterThan, 0.5f);
-
-    public enum ChannelType : int
-    {
-        Alpha = 0,
-        Brightness = 1,
-        Red = 2,
-        Green = 3,
-        Blue = 4
-    }
-    public ChannelType Channel;
-    public enum ConditionType : int
-    {
-        GreaterThan = 0,
-        LessThan = 1
-    }
-    public ConditionType Condition;
-    public float Threshold;
-
-    public PixelSolidCondition(ChannelType channelType, ConditionType conditionType, float threshold)
-    {
-        Channel = channelType;
-        Condition = conditionType;
-        Threshold = Mathf.Clamp01(threshold);
-    }
-
-    public readonly bool IsPixelSolid(Color pixel)
-    {
-        float value;
-        switch (Channel)
-        {
-            case ChannelType.Brightness:
-                value = (pixel.r + pixel.g + pixel.b) / 3.0f;
-                break;
-            case ChannelType.Red:
-                value = pixel.r;
-                break;
-            case ChannelType.Green:
-                value = pixel.g;
-                break;
-            case ChannelType.Blue:
-                value = pixel.b;
-                break;
-            default:
-                value = pixel.a;
-                break;
-        };
-
-        if (Condition is ConditionType.LessThan)
-        {
-            return value < Threshold;
-        }
-        else
-        {
-            return value > Threshold;
-        }
-    }
-}
-
-// A struct for efficiently storing simple 2d line segments in pixel space.
-public struct LineSegment
-{
-    public Vector2Int Start;
-    public Vector2Int End;
-
-    public LineSegment(Vector2Int start, Vector2Int end)
-    {
-        Start = start;
-        End = end;
-    }
-}
-
-// A static helper class containing the actual pixel perfect outline tracing algorithm. All other components and classes make use of the PixelTracingHelper for their internal logic.
-public static class PixelTracingHelper
-{
-    // Traces a pixel perfect outline of a given texture and reimports that texture with the new outline as its physics shape. If the given texture is a sprite sheet then physics shapes are generated and applied for each sprite individually.
-    // Note this causes permanent changes to the texture's physics shape.
-    public static void TraceAndApplyPhysicsShape(Texture2D texture, PixelSolidCondition pixelSolidCondition)
-    {
-        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
-        TextureImporter textureImporter = AssetImporter.GetAtPath(textureAssetPath) as TextureImporter;
-        SpriteDataProviderFactories spriteDataProviderFactory = new SpriteDataProviderFactories();
-        spriteDataProviderFactory.Init();
-        ISpriteEditorDataProvider spriteEditorDataProvider = spriteDataProviderFactory.GetSpriteEditorDataProviderFromObject(textureImporter);
-        spriteEditorDataProvider.InitSpriteEditorDataProvider();
-        ISpritePhysicsOutlineDataProvider physicsOutlineDataProvider = spriteEditorDataProvider.GetDataProvider<ISpritePhysicsOutlineDataProvider>();
-
-        SpriteRect[] spriteRects = spriteEditorDataProvider.GetSpriteRects();
-        for (int i = 0; i < spriteRects.Length; i++)
-        {
-            SpriteRect spriteRect = spriteRects[i];
-            RectInt pixelRect = new RectInt((int)spriteRect.rect.x, (int)spriteRect.rect.y, (int)spriteRect.rect.width, (int)spriteRect.rect.height);
-            Vector2Int[][] pixelPolygons = TraceTexture(texture, pixelSolidCondition, pixelRect);
-            Vector2[][] polygons = new Vector2[pixelPolygons.Length][];
-            float offsetX = -(pixelRect.width / 2.0f);
-            float offsetY = -(pixelRect.height / 2.0f);
-            for (int j = 0; j < pixelPolygons.Length; j++)
-            {
-                Vector2Int[] pixelPolygon = pixelPolygons[j];
-                Vector2[] polygon = new Vector2[pixelPolygon.Length];
-                for (int k = 0; k < pixelPolygon.Length; k++)
-                {
-                    polygon[k] = new Vector2(pixelPolygon[k].x + offsetX, pixelPolygon[k].y + offsetY);
-                }
-                polygons[j] = polygon;
-            }
-            physicsOutlineDataProvider.SetOutlines(spriteRect.spriteID, new List<Vector2[]>(polygons));
-        }
-
-        spriteEditorDataProvider.Apply();
-        EditorUtility.SetDirty(textureImporter);
-        textureImporter.SaveAndReimport();
-        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-    }
-
-    // Traces a pixel perfect outline of a given sprite using TraceTexture for the initial shape. Then scales that shape based upon the sprite's pixels per unit and pivot.
-    public static Vector2[][] TraceSprite(Sprite sprite, PixelSolidCondition pixelSolidCondition)
-    {
-        if (sprite == null)
-        {
-            return new Vector2[0][];
-        }
-
-        Vector2Int[][] pixelPolygons = TraceTexture(sprite.texture, pixelSolidCondition, new RectInt((int)sprite.rect.xMin, (int)sprite.rect.yMin, (int)sprite.rect.width, (int)sprite.rect.height));
-
-        float scale = 1.0f / sprite.pixelsPerUnit;
-        float offsetX = -(sprite.pivot.x * scale);
-        float offsetY = -(sprite.pivot.y * scale);
-#if PIXEL_COLLIDER_DEBUG
-        debugScale = scale;
-        debugOffset = new Vector3(offsetX, offsetY);
-#endif
-        Vector2[][] polygons = new Vector2[pixelPolygons.Length][];
-        for (int i = 0; i < pixelPolygons.Length; i++)
-        {
-            Vector2Int[] pixelPolygon = pixelPolygons[i];
-            Vector2[] polygon = new Vector2[pixelPolygon.Length];
-            for (int j = 0; j < pixelPolygon.Length; j++)
-            {
-                polygon[j] = new Vector2((pixelPolygon[j].x * scale) + offsetX, (pixelPolygon[j].y * scale) + offsetY);
-            }
-            polygons[i] = polygon;
-        }
-        return polygons;
-    }
-
-    // Traces a pixel perfect outline of a given texture. Optionally traces only a small subsection within the texture as defined by rect.
-    public static Vector2Int[][] TraceTexture(Texture2D texture, PixelSolidCondition pixelSolidCondition, RectInt? rect = null)
-    {
-        if (texture == null || texture.width == 0 || texture.height == 0)
-        {
-            return new Vector2Int[0][];
-        }
-        rect ??= new RectInt(0, 0, texture.width, texture.height);
-        if (rect.Value.width == 0 || rect.Value.height == 0)
-        {
-            throw new System.Exception("Rect cannot have a width or height of 0.");
-        }
-        if (rect.Value.xMin > 0 || rect.Value.yMin > 0 || rect.Value.xMax > texture.width || rect.Value.yMax > texture.height)
-        {
-            throw new System.Exception("Rect must be contained within the bounds of texture.");
-        }
-        if (!texture.isReadable)
-        {
-            texture = HandleUnreadableTexture(texture);
-        }
-        return TraceTextureInternal(texture, pixelSolidCondition, (RectInt)rect);
-    }
-
-    // Handles an unreadable texture by performing the action specified by the current OnUnreadableTexture setting. For more information read the comments at the very top of this file.
-    private static Texture2D HandleUnreadableTexture(Texture2D texture)
-    {
-#if OnUnreadableTexture_ThrowError
-        throw new System.Exception($"Texture was unreadable.");
-#elif OnUnreadableTexture_ReadFileDirectly
-#if UNITY_EDITOR
-        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
-        if (!System.IO.File.Exists(textureAssetPath))
-        {
-            throw new System.Exception("Texture does not have an associated asset file and therefore could not be read directly.");
-        }
-        if (EditorApplication.isPlaying)
-        {
-            // Additional information on the following warning:
-            // When reading the pixel data from a texture to generate a pixel perfect outline we run into troubles if Texture2D.isReadable == false. In that case one option is to read the pixel data from the image file directly (.png or .jpg). However this method only works in the unity editor where asset source files are accessible. Once the game has been built in release mode the asset source files will no longer be available and this method will fail. As such it is recommended to use other options if you need to trace textures at runtime. Scroll to the very top of this file for other OnTextureUnreadable actions.
-            Debug.LogWarning("Texture was read directly from the asset file during runtime. This only works in debug builds and is considered unstable.");
-        }
-        byte[] rawTextureBytes = System.IO.File.ReadAllBytes(textureAssetPath);
-        // Note that the initial size of loadedTexture does not matter because LoadImage will overwrite it.
-        Texture2D loadedTexture = new Texture2D(1, 1);
-        loadedTexture.LoadImage(rawTextureBytes);
-        return loadedTexture;
-#else
-        throw new System.Exception($"Textures cannot be read directly from the asset file in a release build.");
-#endif
-#elif OnUnreadableTexture_MakeTextureReadable
-#if UNITY_EDITOR
-        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
-        if (!System.IO.File.Exists(textureAssetPath))
-        {
-            throw new System.Exception("Texture does not have an associated asset file and therefore could not be made readable.");
-        }
-        TextureImporter textureImporter = (TextureImporter)AssetImporter.GetAtPath(textureAssetPath);
-        textureImporter.isReadable = true;
-        EditorUtility.SetDirty(textureImporter);
-        textureImporter.SaveAndReimport();
-        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-        Texture2D loadedTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(textureAssetPath);
-        return loadedTexture;
-#else
-        throw new System.Exception($"Textures cannot be made readable in a release build.");
-#endif
-#endif
-    }
-
-    // Traces a pixel perfect outline of a given texture. Unlike the public version of TraceTexture this method requires that the texture be readable and that rect not be null. This method contains the actual algorithm implementation.
-    private static Vector2Int[][] TraceTextureInternal(Texture2D texture, PixelSolidCondition pixelSolidCondition, RectInt rect)
-    {
-        // Read all the pixels from the source image all at once. This is way faster than reading the pixels one at a time. Additionally if we are reading the whole texture we can save even more time by not specifying a rect.
-        Color[] pixelData;
-        if (rect.x == 0 && rect.y == 0 && rect.width == texture.width && rect.height == texture.height)
-        {
-            pixelData = texture.GetPixels();
-        }
-        else
-        {
-            pixelData = texture.GetPixels(rect.x, rect.y, rect.width, rect.height);
-        }
-
-        // Compute whether each pixel is solid only once to save time. Then we can just look up values from the solidityMap later on.
-        bool[] solidityMap = new bool[pixelData.Length];
-        for (int i = 0; i < pixelData.Length; i++)
-        {
-            solidityMap[i] = pixelSolidCondition.IsPixelSolid(pixelData[i]);
-        }
-
-        // Cache the width and height of our rect for faster access.
-        int width = rect.width;
-        int height = rect.height;
-
-        // PHASE 1: Create line segments for each boarder between solid pixel and nonsolid pixel.
-        // Goofy means the left or up.
-        bool currentLineSegmentNull = true;
-        LineSegment currentLineSegment = new LineSegment();
-        LinkedList<LineSegment> rightLineSegments = new LinkedList<LineSegment>();
-        LinkedList<LineSegment> leftLineSegments = new LinkedList<LineSegment>();
-        LinkedList<LineSegment> upLineSegments = new LinkedList<LineSegment>();
-        LinkedList<LineSegment> downLineSegments = new LinkedList<LineSegment>();
-
-        // Add line segments for all the edges along the very bottom of the texture.
-        currentLineSegmentNull = true;
-        currentLineSegment.Start.y = 0;
-        currentLineSegment.End.y = 0;
-        for (int x = 0; x < width; x++)
-        {
-            if (solidityMap[x]) // (x, 0)
-            {
-                if (currentLineSegmentNull)
-                {
-                    currentLineSegment.Start.x = x + 1;
-                    currentLineSegment.End.x = x;
-                    currentLineSegmentNull = false;
-                }
-                else
-                {
-                    currentLineSegment.Start.x++;
-                }
-            }
-            else if (!currentLineSegmentNull)
-            {
-                leftLineSegments.AddLast(currentLineSegment);
-                currentLineSegmentNull = true;
-            }
-        }
-        if (!currentLineSegmentNull)
-        {
-            leftLineSegments.AddLast(currentLineSegment);
-            currentLineSegmentNull = true;
-        }
-
-        // Add line segments for all the edges along the horizontal grid lines of the texture.
-        bool currentLineSegmentRight = false;
-        for (int y = 1; y < height; y++)
-        {
-            currentLineSegmentNull = true;
-            currentLineSegment.Start.y = y;
-            currentLineSegment.End.y = y;
-            for (int x = 0; x < width; x++)
-            {
-                if (!solidityMap[(y * width) + x] && solidityMap[((y - 1) * width) + x]) // !(x, y) (x, y - 1)
-                {
-                    if (currentLineSegmentNull || !currentLineSegmentRight)
-                    {
-                        if (!currentLineSegmentNull)
-                        {
-                            leftLineSegments.AddLast(currentLineSegment);
-                        }
-                        currentLineSegment.Start.x = x;
-                        currentLineSegment.End.x = x + 1;
-                        currentLineSegmentNull = false;
-                        currentLineSegmentRight = true;
-                    }
-                    else
-                    {
-                        currentLineSegment.End.x++;
-                    }
-                }
-                else if (solidityMap[(y * width) + x] && !solidityMap[((y - 1) * width) + x]) // (x, y) !(x, y - 1)
-                {
-                    if (currentLineSegmentNull || currentLineSegmentRight)
-                    {
-                        if (!currentLineSegmentNull)
-                        {
-                            rightLineSegments.AddLast(currentLineSegment);
-                        }
-                        currentLineSegment.Start.x = x + 1;
-                        currentLineSegment.End.x = x;
-                        currentLineSegmentNull = false;
-                        currentLineSegmentRight = false;
-                    }
-                    else
-                    {
-                        currentLineSegment.Start.x++;
-                    }
-                }
-                else if (!currentLineSegmentNull)
-                {
-                    if (currentLineSegmentRight)
-                    {
-                        rightLineSegments.AddLast(currentLineSegment);
-                    }
-                    else
-                    {
-                        leftLineSegments.AddLast(currentLineSegment);
-                    }
-                    currentLineSegmentNull = true;
-                }
-            }
-            if (!currentLineSegmentNull)
-            {
-                if (currentLineSegmentRight)
-                {
-                    rightLineSegments.AddLast(currentLineSegment);
-                }
-                else
-                {
-                    leftLineSegments.AddLast(currentLineSegment);
-                }
-                currentLineSegmentNull = true;
-            }
-        }
-
-        // Add line segments for all the edges along the very top of the texture.
-        currentLineSegmentNull = true;
-        currentLineSegment.Start.y = height;
-        currentLineSegment.End.y = height;
-        for (int x = 0; x < width; x++)
-        {
-            if (solidityMap[((height - 1) * width) + x]) // (x, height - 1)
-            {
-                if (currentLineSegmentNull)
-                {
-                    currentLineSegment.Start.x = x;
-                    currentLineSegment.End.x = x + 1;
-                    currentLineSegmentNull = false;
-                }
-                else
-                {
-                    currentLineSegment.End.x++;
-                }
-            }
-            else if (!currentLineSegmentNull)
-            {
-                rightLineSegments.AddLast(currentLineSegment);
-                currentLineSegmentNull = true;
-            }
-        }
-        if (!currentLineSegmentNull)
-        {
-            rightLineSegments.AddLast(currentLineSegment);
-            currentLineSegmentNull = true;
-        }
-
-        // Add line segments for all the edges along the very left of the texture.
-        currentLineSegmentNull = true;
-        currentLineSegment.Start.x = 0;
-        currentLineSegment.End.x = 0;
-        for (int y = 0; y < height; y++)
-        {
-            if (solidityMap[y * width]) // (0, y)
-            {
-                if (currentLineSegmentNull)
-                {
-                    currentLineSegment.Start.y = y;
-                    currentLineSegment.End.y = y + 1;
-                    currentLineSegmentNull = false;
-                }
-                else
-                {
-                    currentLineSegment.End.y++;
-                }
-            }
-            else if (!currentLineSegmentNull)
-            {
-                upLineSegments.AddLast(currentLineSegment);
-                currentLineSegmentNull = true;
-            }
-        }
-        if (!currentLineSegmentNull)
-        {
-            upLineSegments.AddLast(currentLineSegment);
-            currentLineSegmentNull = true;
-        }
-
-        // Add line segments for all the edges along the vertical grid lines of the texture.
-        bool currentLineSegmentUp = false;
-        for (int x = 1; x < width; x++)
-        {
-            currentLineSegmentNull = true;
-            currentLineSegment.Start.x = x;
-            currentLineSegment.End.x = x;
-            for (int y = 0; y < width; y++)
-            {
-                if (solidityMap[(y * width) + x] && !solidityMap[(y * width) + (x - 1)]) // (x, y) !(x - 1, y)
-                {
-                    if (currentLineSegmentNull || !currentLineSegmentUp)
-                    {
-                        if (!currentLineSegmentNull)
-                        {
-                            downLineSegments.AddLast(currentLineSegment);
-                        }
-                        currentLineSegment.Start.y = y;
-                        currentLineSegment.End.y = y + 1;
-                        currentLineSegmentNull = false;
-                        currentLineSegmentUp = true;
-                    }
-                    else
-                    {
-                        currentLineSegment.End.y++;
-                    }
-                }
-                else if (!solidityMap[(y * width) + x] && solidityMap[(y * width) + (x - 1)]) // !(x, y) (x - 1, y)
-                {
-                    if (currentLineSegmentNull || currentLineSegmentUp)
-                    {
-                        if (!currentLineSegmentNull)
-                        {
-                            upLineSegments.AddLast(currentLineSegment);
-                        }
-                        currentLineSegment.Start.y = y + 1;
-                        currentLineSegment.End.y = y;
-                        currentLineSegmentNull = false;
-                        currentLineSegmentUp = false;
-                    }
-                    else
-                    {
-                        currentLineSegment.Start.y++;
-                    }
-                }
-                else if (!currentLineSegmentNull)
-                {
-                    if (currentLineSegmentUp)
-                    {
-                        upLineSegments.AddLast(currentLineSegment);
-                    }
-                    else
-                    {
-                        downLineSegments.AddLast(currentLineSegment);
-                    }
-                    currentLineSegmentNull = true;
-                }
-            }
-            if (!currentLineSegmentNull)
-            {
-                if (currentLineSegmentUp)
-                {
-                    upLineSegments.AddLast(currentLineSegment);
-                }
-                else
-                {
-                    downLineSegments.AddLast(currentLineSegment);
-                }
-                currentLineSegmentNull = true;
-            }
-        }
-
-        // Add line segments for all the edges along the very right of the texture.
-        currentLineSegmentNull = true;
-        currentLineSegment.Start.x = width;
-        currentLineSegment.End.x = width;
-        for (int y = 0; y < height; y++)
-        {
-            if (solidityMap[(y * width) + (width - 1)]) // (width - 1, y)
-            {
-                if (currentLineSegmentNull)
-                {
-                    currentLineSegment.Start.y = y + 1;
-                    currentLineSegment.End.y = y;
-                    currentLineSegmentNull = false;
-                }
-                else
-                {
-                    currentLineSegment.Start.y++;
-                }
-            }
-            else if (!currentLineSegmentNull)
-            {
-                downLineSegments.AddLast(currentLineSegment);
-                currentLineSegmentNull = true;
-            }
-        }
-        if (!currentLineSegmentNull)
-        {
-            downLineSegments.AddLast(currentLineSegment);
-            currentLineSegmentNull = true;
-        }
-
-#if PIXEL_TRACING_DEBUGGER
-        PixelTracingDebugger.SendDebugInfo(texture, upLineSegments.ToArray(), downLineSegments.ToArray(), rightLineSegments.ToArray(), leftLineSegments.ToArray());
-#endif
-
-        // PHASE 2: Combine all the line segments into polygons.
-        LinkedList<Vector2Int[]> polygons = new LinkedList<Vector2Int[]>();
-        while (leftLineSegments.Count + rightLineSegments.Count > 0)
-        {
-            LinkedList<Vector2Int> currentPolygon = new LinkedList<Vector2Int>();
-            currentPolygon.AddFirst(rightLineSegments.First.Value.Start);
-            currentPolygon.AddLast(rightLineSegments.First.Value.End);
-            rightLineSegments.RemoveFirst();
-
-            // Goofy means the last line segment faces either up or left.
-            bool currentPolygonGoofy;
-            if (AddLineSegment(currentPolygon, downLineSegments))
-            {
-                currentPolygonGoofy = false;
-            }
-            else
-            {
-                AddLineSegment(currentPolygon, upLineSegments);
-                currentPolygonGoofy = true;
-            }
-
-            while (currentPolygon.First.Value != currentPolygon.Last.Value)
-            {
-                if (currentPolygonGoofy)
-                {
-                    if (AddLineSegment(currentPolygon, rightLineSegments))
-                    {
-                        currentPolygonGoofy = false;
-                    }
-                    else
-                    {
-                        AddLineSegment(currentPolygon, leftLineSegments);
-                        currentPolygonGoofy = true;
-                    }
-                }
-                else
-                {
-                    if (AddLineSegment(currentPolygon, leftLineSegments))
-                    {
-                        currentPolygonGoofy = true;
-                    }
-                    else
-                    {
-                        AddLineSegment(currentPolygon, rightLineSegments);
-                        currentPolygonGoofy = false;
-                    }
-                }
-                if (currentPolygonGoofy)
-                {
-                    if (AddLineSegment(currentPolygon, upLineSegments))
-                    {
-                        currentPolygonGoofy = true;
-                    }
-                    else
-                    {
-                        AddLineSegment(currentPolygon, downLineSegments);
-                        currentPolygonGoofy = false;
-                    }
-                }
-                else
-                {
-                    if (AddLineSegment(currentPolygon, downLineSegments))
-                    {
-                        currentPolygonGoofy = false;
-                    }
-                    else
-                    {
-                        AddLineSegment(currentPolygon, upLineSegments);
-                        currentPolygonGoofy = true;
-                    }
-                }
-            }
-
-            currentPolygon.RemoveLast();
-            polygons.AddLast(currentPolygon.ToArray());
-        }
-
-        return polygons.ToArray();
-    }
-
-    // Adds a new point to a given partial polygon by finding a line segment which can be added on to the existing path.
-    // Returns true if a line segment was added else returns false.
-    private static bool AddLineSegment(LinkedList<Vector2Int> partialPolygon, LinkedList<LineSegment> lineSegments)
-    {
-        Vector2Int lastPointInPolygon = partialPolygon.Last.Value;
-        LinkedListNode<LineSegment> currentNode = lineSegments.First;
-        for (int i = 0; i < lineSegments.Count; i++)
-        {
-            LineSegment currentLineSegment = currentNode.Value;
-            if (currentLineSegment.Start == lastPointInPolygon)
-            {
-                partialPolygon.AddLast(currentLineSegment.End);
-                lineSegments.Remove(currentNode);
-                return true;
-            }
-            currentNode = currentNode.Next;
-        }
-        return false;
-    }
-
-    // A very useful extension method for converting a linked list to a normal array.
-    public static T[] ToArray<T>(this LinkedList<T> list)
-    {
-        T[] output = new T[list.Count];
-        LinkedListNode<T> currentNode = list.First;
-        for (int i = 0; i < list.Count; i++)
-        {
-            output[i] = currentNode.Value;
-            currentNode = currentNode.Next;
-        }
-        return output;
     }
 }
 
@@ -1136,10 +483,552 @@ public static class GUILayoutHelper
 }
 #endif
 
-// The following is a set of debuggin gizmos which were super helpful when debuggin the PixelTracingHelper
-// however if you just want to use this script not work on improving it then this is probably useless to you
-// I recommend leaving PIXEL_COLLIDER_DEBUG disabled unless working on improving the algorithem.
-#if PIXEL_TRACING_DEBUGGER
+// A static helper class containing the actual pixel perfect outline tracing algorithm. All other components and classes make use of the PixelTracingHelper for their internal logic.
+public static class PixelTracingHelper
+{
+    // Traces a pixel perfect outline of a given texture and reimports that texture with the new outline as its physics shape. If the given texture is a sprite sheet then physics shapes are generated and applied for each sprite individually.
+    // Note this causes permanent changes to the texture's physics shape.
+    public static void TraceAndApplyPhysicsShape(Texture2D texture, PixelSolidCondition pixelSolidCondition)
+    {
+        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
+        TextureImporter textureImporter = AssetImporter.GetAtPath(textureAssetPath) as TextureImporter;
+        SpriteDataProviderFactories spriteDataProviderFactory = new SpriteDataProviderFactories();
+        spriteDataProviderFactory.Init();
+        ISpriteEditorDataProvider spriteEditorDataProvider = spriteDataProviderFactory.GetSpriteEditorDataProviderFromObject(textureImporter);
+        spriteEditorDataProvider.InitSpriteEditorDataProvider();
+        ISpritePhysicsOutlineDataProvider physicsOutlineDataProvider = spriteEditorDataProvider.GetDataProvider<ISpritePhysicsOutlineDataProvider>();
+
+        SpriteRect[] spriteRects = spriteEditorDataProvider.GetSpriteRects();
+        for (int i = 0; i < spriteRects.Length; i++)
+        {
+            SpriteRect spriteRect = spriteRects[i];
+            RectInt pixelRect = new RectInt((int)spriteRect.rect.x, (int)spriteRect.rect.y, (int)spriteRect.rect.width, (int)spriteRect.rect.height);
+            Vector2Int[][] pixelPolygons = TraceTexture(texture, pixelSolidCondition, pixelRect);
+            Vector2[][] polygons = new Vector2[pixelPolygons.Length][];
+            float offsetX = -(pixelRect.width / 2.0f);
+            float offsetY = -(pixelRect.height / 2.0f);
+            for (int j = 0; j < pixelPolygons.Length; j++)
+            {
+                Vector2Int[] pixelPolygon = pixelPolygons[j];
+                Vector2[] polygon = new Vector2[pixelPolygon.Length];
+                for (int k = 0; k < pixelPolygon.Length; k++)
+                {
+                    polygon[k] = new Vector2(pixelPolygon[k].x + offsetX, pixelPolygon[k].y + offsetY);
+                }
+                polygons[j] = polygon;
+            }
+            physicsOutlineDataProvider.SetOutlines(spriteRect.spriteID, new List<Vector2[]>(polygons));
+        }
+
+        spriteEditorDataProvider.Apply();
+        EditorUtility.SetDirty(textureImporter);
+        textureImporter.SaveAndReimport();
+        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
+    }
+
+    // Traces a pixel perfect outline of a given sprite using TraceTexture for the initial shape. Then scales that shape based upon the sprite's pixels per unit and pivot.
+    public static Vector2[][] TraceSprite(Sprite sprite, PixelSolidCondition pixelSolidCondition)
+    {
+        if (sprite == null)
+        {
+            return new Vector2[0][];
+        }
+
+        Vector2Int[][] pixelPolygons = TraceTexture(sprite.texture, pixelSolidCondition, new RectInt((int)sprite.rect.xMin, (int)sprite.rect.yMin, (int)sprite.rect.width, (int)sprite.rect.height));
+
+        float scale = 1.0f / sprite.pixelsPerUnit;
+        float offsetX = -(sprite.pivot.x * scale);
+        float offsetY = -(sprite.pivot.y * scale);
+        Vector2[][] polygons = new Vector2[pixelPolygons.Length][];
+        for (int i = 0; i < pixelPolygons.Length; i++)
+        {
+            Vector2Int[] pixelPolygon = pixelPolygons[i];
+            Vector2[] polygon = new Vector2[pixelPolygon.Length];
+            for (int j = 0; j < pixelPolygon.Length; j++)
+            {
+                polygon[j] = new Vector2((pixelPolygon[j].x * scale) + offsetX, (pixelPolygon[j].y * scale) + offsetY);
+            }
+            polygons[i] = polygon;
+        }
+        return polygons;
+    }
+
+    // Traces a pixel perfect outline of a given texture. Optionally traces only a small subsection within the texture as defined by rect.
+    public static Vector2Int[][] TraceTexture(Texture2D texture, PixelSolidCondition pixelSolidCondition, RectInt? rect = null)
+    {
+        if (texture == null || texture.width == 0 || texture.height == 0)
+        {
+            return new Vector2Int[0][];
+        }
+        rect ??= new RectInt(0, 0, texture.width, texture.height);
+        if (rect.Value.width == 0 || rect.Value.height == 0)
+        {
+            throw new System.Exception("Rect cannot have a width or height of 0.");
+        }
+        if (rect.Value.xMin > 0 || rect.Value.yMin > 0 || rect.Value.xMax > texture.width || rect.Value.yMax > texture.height)
+        {
+            throw new System.Exception("Rect must be contained within the bounds of texture.");
+        }
+        if (!texture.isReadable)
+        {
+            texture = HandleUnreadableTexture(texture);
+        }
+        return TraceTextureInternal(texture, pixelSolidCondition, (RectInt)rect);
+    }
+
+    // Handles an unreadable texture by performing the action specified by the current OnUnreadableTexture setting. For more information read the comments at the very top of this file.
+    private static Texture2D HandleUnreadableTexture(Texture2D texture)
+    {
+#if OnUnreadableTexture_ThrowError
+        throw new System.Exception($"Texture was unreadable.");
+#elif OnUnreadableTexture_ReadFileDirectly
+#if UNITY_EDITOR
+        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
+        if (!System.IO.File.Exists(textureAssetPath))
+        {
+            throw new System.Exception("Texture does not have an associated asset file and therefore could not be read directly.");
+        }
+        if (EditorApplication.isPlaying)
+        {
+            // Additional information on the following warning:
+            // When reading the pixel data from a texture to generate a pixel perfect outline we run into troubles if Texture2D.isReadable == false. In that case one option is to read the pixel data from the image file directly (.png or .jpg). However this method only works in the unity editor where asset source files are accessible. Once the game has been built in release mode the asset source files will no longer be available and this method will fail. As such it is recommended to use other options if you need to trace textures at runtime. Scroll to the very top of this file for other OnTextureUnreadable actions.
+            Debug.LogWarning("Texture was read directly from the asset file during runtime. This only works in debug builds and is considered unstable.");
+        }
+        byte[] rawTextureBytes = System.IO.File.ReadAllBytes(textureAssetPath);
+        // Note that the initial size of loadedTexture does not matter because LoadImage will overwrite it.
+        Texture2D loadedTexture = new Texture2D(1, 1);
+        loadedTexture.LoadImage(rawTextureBytes);
+        return loadedTexture;
+#else
+        throw new System.Exception($"Textures cannot be read directly from the asset file in a release build.");
+#endif
+#elif OnUnreadableTexture_MakeTextureReadable
+#if UNITY_EDITOR
+        string textureAssetPath = AssetDatabase.GetAssetPath(texture);
+        if (!System.IO.File.Exists(textureAssetPath))
+        {
+            throw new System.Exception("Texture does not have an associated asset file and therefore could not be made readable.");
+        }
+        TextureImporter textureImporter = (TextureImporter)AssetImporter.GetAtPath(textureAssetPath);
+        textureImporter.isReadable = true;
+        EditorUtility.SetDirty(textureImporter);
+        textureImporter.SaveAndReimport();
+        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
+        Texture2D loadedTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(textureAssetPath);
+        return loadedTexture;
+#else
+        throw new System.Exception($"Textures cannot be made readable in a release build.");
+#endif
+#endif
+    }
+
+    // Traces a pixel perfect outline of a given texture. Unlike the public version of TraceTexture this method requires that the texture be readable and that rect not be null. This method contains the actual algorithm implementation.
+    private static Vector2Int[][] TraceTextureInternal(Texture2D texture, PixelSolidCondition pixelSolidCondition, RectInt rect)
+    {
+        // Read all the pixels from the source image all at once. This is way faster than reading the pixels one at a time. Additionally if we are reading the whole texture we can save even more time by not specifying a rect.
+        Color[] pixelData;
+        if (rect.x == 0 && rect.y == 0 && rect.width == texture.width && rect.height == texture.height)
+        {
+            pixelData = texture.GetPixels();
+        }
+        else
+        {
+            pixelData = texture.GetPixels(rect.x, rect.y, rect.width, rect.height);
+        }
+
+        // Compute whether each pixel is solid only once to save time. Then we can just look up values from the solidityMap later on.
+        bool[] solidityMap = new bool[pixelData.Length];
+        for (int i = 0; i < pixelData.Length; i++)
+        {
+            solidityMap[i] = pixelSolidCondition.IsPixelSolid(pixelData[i]);
+        }
+
+        // Cache the width and height of our rect for faster access.
+        int width = rect.width;
+        int height = rect.height;
+
+        // PHASE 1: Create line segments for each boarder between solid pixel and nonsolid pixel.
+        bool currentLineSegmentNull = true;
+        LineSegmentDirection currentLineSegmentDirection = LineSegmentDirection.Right;
+        LineSegment currentLineSegment = new LineSegment();
+        LinkedList<LineSegment> rightLineSegments = new LinkedList<LineSegment>();
+        LinkedList<LineSegment> leftLineSegments = new LinkedList<LineSegment>();
+        LinkedList<LineSegment> upLineSegments = new LinkedList<LineSegment>();
+        LinkedList<LineSegment> downLineSegments = new LinkedList<LineSegment>();
+
+        // Add line segments for all the edges along the horizontal grid lines of the texture.
+        for (int y = 0; y <= height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                bool upSideSolid = IsPixelSolidOnMap(x, y, solidityMap, width, height);
+                bool downSideSolid = IsPixelSolidOnMap(x, y - 1, solidityMap, width, height);
+                if (!upSideSolid && downSideSolid)
+                {
+                    // Right facing segment
+                    if (currentLineSegmentNull || currentLineSegmentDirection != LineSegmentDirection.Right)
+                    {
+                        CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+
+                        currentLineSegment.Start.x = x;
+                        currentLineSegment.Start.y = y;
+                        currentLineSegment.End.x = x + 1;
+                        currentLineSegment.End.y = y;
+
+                        currentLineSegmentDirection = LineSegmentDirection.Right;
+                        currentLineSegmentNull = false;
+                    }
+                    else
+                    {
+                        currentLineSegment.End.x++;
+                    }
+                }
+                else if (upSideSolid && !downSideSolid)
+                {
+                    // Left facing segment
+                    if (currentLineSegmentNull || currentLineSegmentDirection != LineSegmentDirection.Left)
+                    {
+                        CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+
+                        currentLineSegment.Start.x = x + 1;
+                        currentLineSegment.Start.y = y;
+                        currentLineSegment.End.x = x;
+                        currentLineSegment.End.y = y;
+
+                        currentLineSegmentDirection = LineSegmentDirection.Left;
+                        currentLineSegmentNull = false;
+                    }
+                    else
+                    {
+                        currentLineSegment.Start.x++;
+                    }
+                }
+                else
+                {
+                    CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+                }
+            }
+            CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+        }
+
+        // Add line segments for all the edges along the vertical grid lines of the texture.
+        for (int x = 0; x <= width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                bool rightSideSolid = IsPixelSolidOnMap(x, y, solidityMap, width, height);
+                bool leftSideSolid = IsPixelSolidOnMap(x - 1, y, solidityMap, width, height);
+                if (rightSideSolid && !leftSideSolid)
+                {
+                    // Up facing segment
+                    if (currentLineSegmentNull || currentLineSegmentDirection != LineSegmentDirection.Up)
+                    {
+                        CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+
+                        currentLineSegment.Start.x = x;
+                        currentLineSegment.Start.y = y;
+                        currentLineSegment.End.x = x;
+                        currentLineSegment.End.y = y + 1;
+
+                        currentLineSegmentDirection = LineSegmentDirection.Up;
+                        currentLineSegmentNull = false;
+                    }
+                    else
+                    {
+                        currentLineSegment.End.y++;
+                    }
+                }
+                else if (!rightSideSolid && leftSideSolid)
+                {
+                    // Down facing segment
+                    if (currentLineSegmentNull || currentLineSegmentDirection != LineSegmentDirection.Down)
+                    {
+                        CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+
+                        currentLineSegment.Start.x = x;
+                        currentLineSegment.Start.y = y + 1;
+                        currentLineSegment.End.x = x;
+                        currentLineSegment.End.y = y;
+
+                        currentLineSegmentDirection = LineSegmentDirection.Down;
+                        currentLineSegmentNull = false;
+                    }
+                    else
+                    {
+                        currentLineSegment.Start.y++;
+                    }
+                }
+                else
+                {
+                    CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+                }
+            }
+            CompleteLineSegment(ref currentLineSegmentNull, currentLineSegmentDirection, currentLineSegment, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+        }
+
+        // PHASE 2: Combine all the line segments into polygons.
+        LinkedList<Vector2Int[]> polygons = new LinkedList<Vector2Int[]>();
+        while (leftLineSegments.Count + rightLineSegments.Count + upLineSegments.Count + downLineSegments.Count > 0)
+        {
+            if (leftLineSegments.Count <= 0 || rightLineSegments.Count <= 0 || upLineSegments.Count <= 0 || downLineSegments.Count <= 0)
+            {
+                throw new System.Exception("Ran out of line segments too soon. This should never happen. Please report the issue on github.");
+            }
+
+            // Start a new polygon by adding a random line segment from one of the lists.
+            LinkedList<Vector2Int> currentPolygon = new LinkedList<Vector2Int>();
+            currentPolygon.AddFirst(rightLineSegments.First.Value.Start);
+            currentPolygon.AddLast(rightLineSegments.First.Value.End);
+            rightLineSegments.RemoveFirst();
+            LineSegmentDirection lastLineSegmentDirection = LineSegmentDirection.Right;
+
+            while (currentPolygon.First.Value != currentPolygon.Last.Value)
+            {
+                AddLineSegment(currentPolygon, ref lastLineSegmentDirection, rightLineSegments, leftLineSegments, upLineSegments, downLineSegments);
+            }
+
+            currentPolygon.RemoveLast();
+            polygons.AddLast(currentPolygon.ToArray());
+        }
+
+        return polygons.ToArray();
+    }
+
+    // Completes a line segment and adds it to the coorisponding list.
+    // If the current line segment is null does nothing.
+    private static void CompleteLineSegment(ref bool currentLineSegmentNull, LineSegmentDirection currentLineSegmentDirection, LineSegment currentLineSegment, LinkedList<LineSegment> rightLineSegments, LinkedList<LineSegment> leftLineSegments, LinkedList<LineSegment> upLineSegments, LinkedList<LineSegment> downLineSegments)
+    {
+        if (currentLineSegmentNull)
+        {
+            return;
+        }
+
+        switch (currentLineSegmentDirection)
+        {
+            case LineSegmentDirection.Right:
+                rightLineSegments.AddLast(currentLineSegment);
+                break;
+            case LineSegmentDirection.Left:
+                leftLineSegments.AddLast(currentLineSegment);
+                break;
+            case LineSegmentDirection.Up:
+                upLineSegments.AddLast(currentLineSegment);
+                break;
+            case LineSegmentDirection.Down:
+                downLineSegments.AddLast(currentLineSegment);
+                break;
+        }
+
+        currentLineSegmentNull = true;
+    }
+
+    // Returns true if a pixel is solid according to a given solidity map else returns false.
+    private static bool IsPixelSolidOnMap(int x, int y, bool[] solidityMap, int width, int height)
+    {
+        if (x < 0 || y < 0 || x >= width || y >= height)
+        {
+            return false;
+        }
+
+        return solidityMap[(y * width) + x];
+    }
+
+    // Adds an additional line segment to a polygon. Throws an error if not possible.
+    private static void AddLineSegment(LinkedList<Vector2Int> partialPolygon, ref LineSegmentDirection lastLineSegmentDirection, LinkedList<LineSegment> rightLineSegments, LinkedList<LineSegment> leftLineSegments, LinkedList<LineSegment> upLineSegments, LinkedList<LineSegment> downLineSegments)
+    {
+        switch (lastLineSegmentDirection)
+        {
+            case LineSegmentDirection.Right:
+                if (AddLineSegment(partialPolygon, downLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Down;
+                    return;
+                }
+                else if (AddLineSegment(partialPolygon, upLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Up;
+                    return;
+                }
+                else
+                {
+                    throw new System.Exception("Unable to find an additional line segment to add. This should never happen. Please report the issue on github.");
+                }
+            case LineSegmentDirection.Left:
+                if (AddLineSegment(partialPolygon, upLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Up;
+                    return;
+                }
+                else if (AddLineSegment(partialPolygon, downLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Down;
+                    return;
+                }
+                else
+                {
+                    throw new System.Exception("Unable to find an additional line segment to add. This should never happen. Please report the issue on github.");
+                }
+            case LineSegmentDirection.Up:
+                if (AddLineSegment(partialPolygon, rightLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Right;
+                    return;
+                }
+                else if (AddLineSegment(partialPolygon, leftLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Left;
+                    return;
+                }
+                else
+                {
+                    throw new System.Exception("Unable to find an additional line segment to add. This should never happen. Please report the issue on github.");
+                }
+            case LineSegmentDirection.Down:
+                if (AddLineSegment(partialPolygon, leftLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Left;
+                    return;
+                }
+                else if (AddLineSegment(partialPolygon, rightLineSegments))
+                {
+                    lastLineSegmentDirection = LineSegmentDirection.Right;
+                    return;
+                }
+                else
+                {
+                    throw new System.Exception("Unable to find an additional line segment to add. This should never happen. Please report the issue on github.");
+                }
+            default:
+                throw new System.Exception("Invalid LineSegmentDirection. This should never happen. Please report issue on github.");
+        }
+    }
+
+    // Adds a new point to a given partial polygon by finding a line segment which can be added on to the existing path. Returns true if a line segment was added else returns false.
+    private static bool AddLineSegment(LinkedList<Vector2Int> partialPolygon, LinkedList<LineSegment> lineSegments)
+    {
+        Vector2Int lastPointInPolygon = partialPolygon.Last.Value;
+        LinkedListNode<LineSegment> currentNode = lineSegments.First;
+        for (int i = 0; i < lineSegments.Count; i++)
+        {
+            LineSegment currentLineSegment = currentNode.Value;
+            if (currentLineSegment.Start == lastPointInPolygon)
+            {
+                partialPolygon.AddLast(currentLineSegment.End);
+                lineSegments.Remove(currentNode);
+                return true;
+            }
+            currentNode = currentNode.Next;
+        }
+        return false;
+    }
+
+    // A very useful extension method for converting a linked list to a normal array.
+    private static T[] ToArray<T>(this LinkedList<T> list)
+    {
+        T[] output = new T[list.Count];
+        LinkedListNode<T> currentNode = list.First;
+        for (int i = 0; i < list.Count; i++)
+        {
+            output[i] = currentNode.Value;
+            currentNode = currentNode.Next;
+        }
+        return output;
+    }
+}
+
+// An enum for storing the direction of a line segment in the 4 axis aligned directions.
+public enum LineSegmentDirection : byte
+{
+    Right,
+    Left,
+    Up,
+    Down,
+}
+
+// A struct for efficiently storing simple 2d line segments in pixel space.
+public struct LineSegment
+{
+    public Vector2Int Start;
+    public Vector2Int End;
+
+    public LineSegment(Vector2Int start, Vector2Int end)
+    {
+        Start = start;
+        End = end;
+    }
+}
+
+// Stores a conditional statement for determining if a pixel is solid.
+// PixelSolidConditions always come in the following form:
+// Pixels are considered solid if their {Channel} is {Condition} {Threshold}.
+// For example:
+// Pixels are considered solid if their alpha is greater than 0.5.
+public sealed class PixelSolidCondition
+{
+    /* KNOWN ISSUE
+    PixelSolidConditions do not validate themselves yet.
+    */
+    public static readonly PixelSolidCondition Default = new PixelSolidCondition(ChannelType.Alpha, ConditionType.GreaterThan, 0.5f);
+
+    public enum ChannelType : int
+    {
+        Alpha = 0,
+        Brightness = 1,
+        Red = 2,
+        Green = 3,
+        Blue = 4
+    }
+    public ChannelType Channel;
+    public enum ConditionType : int
+    {
+        GreaterThan = 0,
+        LessThan = 1
+    }
+    public ConditionType Condition;
+    public float Threshold;
+
+    public PixelSolidCondition(ChannelType channelType, ConditionType conditionType, float threshold)
+    {
+        Channel = channelType;
+        Condition = conditionType;
+        Threshold = Mathf.Clamp01(threshold);
+    }
+
+    public bool IsPixelSolid(Color pixel)
+    {
+        float value;
+        switch (Channel)
+        {
+            case ChannelType.Brightness:
+                value = (pixel.r + pixel.g + pixel.b) / 3.0f;
+                break;
+            case ChannelType.Red:
+                value = pixel.r;
+                break;
+            case ChannelType.Green:
+                value = pixel.g;
+                break;
+            case ChannelType.Blue:
+                value = pixel.b;
+                break;
+            default:
+                value = pixel.a;
+                break;
+        };
+
+        if (Condition is ConditionType.LessThan)
+        {
+            return value < Threshold;
+        }
+        else
+        {
+            return value > Threshold;
+        }
+    }
+}
+
+// The following static class contains tools which I use for testing and debugging the pixel tracing algorithem and should not be needed for normal use. I recommend leaving this commented out for preformance unless needed.
+/*
 public static class PixelTracingDebugger
 {
     private static Texture2D texture = null;
@@ -1148,7 +1037,7 @@ public static class PixelTracingDebugger
     private static LineSegment[] rightLineSegments = null;
     private static LineSegment[] leftLineSegments = null;
 
-    public static void SendDebugInfo(Texture2D texture, LineSegment[] upLineSegments, LineSegment[] downLineSegments, LineSegment[] rightLineSegments, LineSegment[] leftLineSegments)
+    public static void SendDebugInfo(Texture2D texture, LineSegment[] rightLineSegments, LineSegment[] leftLineSegments, LineSegment[] upLineSegments, LineSegment[] downLineSegments)
     {
         PixelTracingDebugger.texture = texture;
         PixelTracingDebugger.upLineSegments = upLineSegments;
@@ -1167,26 +1056,26 @@ public static class PixelTracingDebugger
         Gizmos.color = new Color(0.98823529411f, 0.42352941176f, 0.51764705882f, 1.0f);
 
         Gizmos.DrawGUITexture(new Rect(0, texture.height, texture.width, -texture.height), texture);
-        for (int i = 0; i < upLineSegments.Length; i++)
-        {
-            DrawLineSegment(upLineSegments[i], 0);
-        }
-        for (int i = 0; i < downLineSegments.Length; i++)
-        {
-            DrawLineSegment(downLineSegments[i], 1);
-        }
         for (int i = 0; i < rightLineSegments.Length; i++)
         {
-            DrawLineSegment(rightLineSegments[i], 2);
+            DrawLineSegment(rightLineSegments[i], LineSegmentDirection.Right);
         }
         for (int i = 0; i < leftLineSegments.Length; i++)
         {
-            DrawLineSegment(leftLineSegments[i], 3);
+            DrawLineSegment(leftLineSegments[i], LineSegmentDirection.Left);
+        }
+        for (int i = 0; i < upLineSegments.Length; i++)
+        {
+            DrawLineSegment(upLineSegments[i], LineSegmentDirection.Up);
+        }
+        for (int i = 0; i < downLineSegments.Length; i++)
+        {
+            DrawLineSegment(downLineSegments[i], LineSegmentDirection.Down);
         }
 
         Gizmos.color = originalGizmosColor;
     }
-    private static void DrawLineSegment(LineSegment lineSegment, int arrowType)
+    private static void DrawLineSegment(LineSegment lineSegment, LineSegmentDirection lineSegmentDirection)
     {
         const float dotSize = 0.1f;
         const float halfArrowLength = 0.1f;
@@ -1196,19 +1085,35 @@ public static class PixelTracingDebugger
         Gizmos.DrawLine(start, end);
         Vector3 midpoint = start + ((end - start) / 2.0f);
         Mesh arrow = new Mesh();
-        switch (arrowType)
+        switch (lineSegmentDirection)
         {
-            case 0: // Up
-                arrow.vertices = new Vector3[] { midpoint + new Vector3(-halfArrowLength, -halfArrowLength), midpoint + new Vector3(0.0f, halfArrowLength), midpoint + new Vector3(halfArrowLength, -halfArrowLength) };
-                break;
-            case 1: // Down
-                arrow.vertices = new Vector3[] { midpoint + new Vector3(halfArrowLength, halfArrowLength), midpoint + new Vector3(0.0f, -halfArrowLength), midpoint + new Vector3(-halfArrowLength, halfArrowLength) };
-                break;
-            case 2: // Right
+            case LineSegmentDirection.Right:
+                if(lineSegment.Start.y != lineSegment.End.y || lineSegment.End.x <= lineSegment.Start.x)
+                {
+                    throw new System.Exception("Line segment was not what it was supposed to be.");
+                }
                 arrow.vertices = new Vector3[] { midpoint + new Vector3(-halfArrowLength, halfArrowLength), midpoint + new Vector3(halfArrowLength, 0.0f), midpoint + new Vector3(-halfArrowLength, -halfArrowLength) };
                 break;
-            default: // Left
+            case LineSegmentDirection.Left:
+                if (lineSegment.Start.y != lineSegment.End.y || lineSegment.Start.x <= lineSegment.End.x)
+                {
+                    throw new System.Exception("Line segment was not what it was supposed to be.");
+                }
                 arrow.vertices = new Vector3[] { midpoint + new Vector3(halfArrowLength, -halfArrowLength), midpoint + new Vector3(-halfArrowLength, 0.0f), midpoint + new Vector3(halfArrowLength, halfArrowLength) };
+                break;
+            case LineSegmentDirection.Up:
+                if (lineSegment.Start.x != lineSegment.End.x || lineSegment.End.y <= lineSegment.Start.y)
+                {
+                    throw new System.Exception("Line segment was not what it was supposed to be.");
+                }
+                arrow.vertices = new Vector3[] { midpoint + new Vector3(-halfArrowLength, -halfArrowLength), midpoint + new Vector3(0.0f, halfArrowLength), midpoint + new Vector3(halfArrowLength, -halfArrowLength) };
+                break;
+            case LineSegmentDirection.Down:
+                if (lineSegment.Start.x != lineSegment.End.x || lineSegment.Start.y <= lineSegment.End.y)
+                {
+                    throw new System.Exception("Line segment was not what it was supposed to be.");
+                }
+                arrow.vertices = new Vector3[] { midpoint + new Vector3(halfArrowLength, halfArrowLength), midpoint + new Vector3(0.0f, -halfArrowLength), midpoint + new Vector3(-halfArrowLength, halfArrowLength) };
                 break;
         }
         arrow.triangles = new int[] { 0, 1, 2 };
@@ -1218,4 +1123,4 @@ public static class PixelTracingDebugger
         Gizmos.DrawSphere(end, dotSize);
     }
 }
-#endif
+*/
