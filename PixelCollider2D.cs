@@ -34,19 +34,14 @@ using UnityEditor.U2D.Sprites;
 [RequireComponent(typeof(SpriteRenderer))]
 public sealed class PixelCollider2D : MonoBehaviour
 {
-    /* KNOWN ISSUE
-    PixelSolidConditions do not save between unity editor sessions. Yet
-    */
     public PixelSolidCondition pixelSolidCondition = PixelSolidCondition.Default;
 
     private SpriteRenderer spriteRenderer = null;
-    private PolygonCollider2D polygonCollider = null;
+    private PolygonCollider2D polygonCollider2D = null;
 
     // Generates a pixel perfect outline of a sprite renderer and applies it to a polygon collider.
     public void Regenerate()
     {
-        pixelSolidCondition.Threshold = Mathf.Clamp01(pixelSolidCondition.Threshold);
-
         // When in edit mode components change frequently so it's never safe to assume an old reference is still valid.
         bool forceReloadComponents = false;
 #if UNITY_EDITOR
@@ -59,19 +54,19 @@ public sealed class PixelCollider2D : MonoBehaviour
         {
             spriteRenderer = GetComponent<SpriteRenderer>();
         }
-        if (polygonCollider == null || forceReloadComponents)
+        if (polygonCollider2D == null || forceReloadComponents)
         {
-            polygonCollider = GetComponent<PolygonCollider2D>();
+            polygonCollider2D = GetComponent<PolygonCollider2D>();
         }
 
         // Trace the sprite and apply the new polygons to the PolygonCollider2D.
         Vector2[][] polygons = PixelTracingHelper.TraceSprite(spriteRenderer.sprite, pixelSolidCondition);
-        polygonCollider.pathCount = polygons.Length;
+        polygonCollider2D.pathCount = polygons.Length;
         for (int i = 0; i < polygons.Length; i++)
         {
-            polygonCollider.SetPath(i, polygons[i]);
+            polygonCollider2D.SetPath(i, polygons[i]);
         }
-        polygonCollider.offset = Vector2.zero;
+        polygonCollider2D.offset = Vector2.zero;
     }
 }
 
@@ -84,10 +79,13 @@ public class PixelCollider2DEditor : Editor
     public override void OnInspectorGUI()
     {
         PixelCollider2D pixelCollider2D = (PixelCollider2D)target;
+        Undo.RecordObject(pixelCollider2D, "Modified PixelCollider2D");
         pixelCollider2D.pixelSolidCondition = GUILayoutHelper.PixelSolidConditionSelector(pixelCollider2D.pixelSolidCondition, this, "pixelSolidCondition");
         GUILayout.Label("", GUILayout.ExpandWidth(false), GUILayout.MaxWidth(0.0f));
         if (GUILayout.Button("Regenerate Collider"))
         {
+            PolygonCollider2D polygonCollider2D = pixelCollider2D.GetComponent<PolygonCollider2D>();
+            Undo.RecordObject(polygonCollider2D, "Regenerated PixelCollider2D");
             pixelCollider2D.Regenerate();
         }
     }
@@ -213,7 +211,7 @@ public class PixelPhysicsShapeEditor : EditorWindow
             {
                 bool confirm = EditorUtility.DisplayDialog(
                     $"Are you sure?",
-                    $"Are you sure you want to change the physics shape of {selectedTextures.Count} {(selectedTextures.Count == 1 ? "texture?" : "textures?")}",
+                    $"Are you sure you want to change the physics shape of {selectedTextures.Count} {(selectedTextures.Count == 1 ? "texture?" : "textures?")}\r\nNote this change is permanent and cannot be undone!",
                     "Yes",
                     "No (cancel and go back)"
                 );
@@ -357,7 +355,7 @@ public static class GUILayoutHelper
         value.Channel = EnumDropdownInternal(value.Channel, context, selectorID + ".Channel");
         GUILayout.Label("is", GUILayout.ExpandWidth(false));
         value.Condition = EnumDropdownInternal(value.Condition, context, selectorID + ".Condition");
-        value.Threshold = Mathf.Clamp01(EditorGUILayout.DelayedFloatField(value.Threshold, GUILayout.ExpandWidth(false), GUILayout.MaxWidth(90.0f)));
+        value.Threshold = Mathf.Clamp01(EditorGUILayout.FloatField(value.Threshold, GUILayout.ExpandWidth(false), GUILayout.MaxWidth(90.0f)));
         GUILayout.EndHorizontal();
         return value;
     }
@@ -486,8 +484,7 @@ public static class GUILayoutHelper
 // A static helper class containing the actual pixel perfect outline tracing algorithm. All other components and classes make use of the PixelTracingHelper for their internal logic.
 public static class PixelTracingHelper
 {
-    // Traces a pixel perfect outline of a given texture and reimports that texture with the new outline as its physics shape. If the given texture is a sprite sheet then physics shapes are generated and applied for each sprite individually.
-    // Note this causes permanent changes to the texture's physics shape.
+    // Traces a pixel perfect outline of a given texture and reimports that texture with the new outline as its physics shape. If the given texture is a sprite sheet then physics shapes are generated and applied for each sprite individually. Note this causes permanent changes to the texture's physics shape.
     public static void TraceAndApplyPhysicsShape(Texture2D texture, PixelSolidCondition pixelSolidCondition)
     {
         string textureAssetPath = AssetDatabase.GetAssetPath(texture);
@@ -625,6 +622,9 @@ public static class PixelTracingHelper
     // Traces a pixel perfect outline of a given texture. Unlike the public version of TraceTexture this method requires that the texture be readable and that rect not be null. This method contains the actual algorithm implementation.
     private static Vector2Int[][] TraceTextureInternal(Texture2D texture, PixelSolidCondition pixelSolidCondition, RectInt rect)
     {
+        // Validate pixel solid condition to make sure its threshold is between 0 and 1.
+        pixelSolidCondition.Validate();
+
         // Read all the pixels from the source image all at once. This is way faster than reading the pixels one at a time. Additionally if we are reading the whole texture we can save even more time by not specifying a rect.
         Color[] pixelData;
         if (rect.x == 0 && rect.y == 0 && rect.width == texture.width && rect.height == texture.height)
@@ -647,7 +647,7 @@ public static class PixelTracingHelper
         int width = rect.width;
         int height = rect.height;
 
-        // PHASE 1: Create line segments for each boarder between solid pixel and nonsolid pixel.
+        // PHASE 1: Create line segments for each border between solid pixel and nonsolid pixel.
         bool currentLineSegmentNull = true;
         LineSegmentDirection currentLineSegmentDirection = LineSegmentDirection.Right;
         LineSegment currentLineSegment = new LineSegment();
@@ -794,8 +794,7 @@ public static class PixelTracingHelper
         return polygons.ToArray();
     }
 
-    // Completes a line segment and adds it to the coorisponding list.
-    // If the current line segment is null does nothing.
+    // Completes a line segment and adds it to the corresponding list. If the current line segment is null does nothing.
     private static void CompleteLineSegment(ref bool currentLineSegmentNull, LineSegmentDirection currentLineSegmentDirection, LineSegment currentLineSegment, LinkedList<LineSegment> rightLineSegments, LinkedList<LineSegment> leftLineSegments, LinkedList<LineSegment> upLineSegments, LinkedList<LineSegment> downLineSegments)
     {
         if (currentLineSegmentNull)
@@ -963,13 +962,10 @@ public struct LineSegment
 // Pixels are considered solid if their {Channel} is {Condition} {Threshold}.
 // For example:
 // Pixels are considered solid if their alpha is greater than 0.5.
-public sealed class PixelSolidCondition
+[System.Serializable]
+public struct PixelSolidCondition
 {
-    /* KNOWN ISSUE
-    PixelSolidConditions do not validate themselves yet.
-    */
     public static readonly PixelSolidCondition Default = new PixelSolidCondition(ChannelType.Alpha, ConditionType.GreaterThan, 0.5f);
-
     public enum ChannelType : int
     {
         Alpha = 0,
@@ -986,15 +982,13 @@ public sealed class PixelSolidCondition
     }
     public ConditionType Condition;
     public float Threshold;
-
     public PixelSolidCondition(ChannelType channelType, ConditionType conditionType, float threshold)
     {
         Channel = channelType;
         Condition = conditionType;
         Threshold = Mathf.Clamp01(threshold);
     }
-
-    public bool IsPixelSolid(Color pixel)
+    public readonly bool IsPixelSolid(Color pixel)
     {
         float value;
         switch (Channel)
@@ -1025,9 +1019,17 @@ public sealed class PixelSolidCondition
             return value > Threshold;
         }
     }
+    public readonly override string ToString()
+    {
+        return $"Pixels are considerd solid if their {Channel} is {Condition} than {Threshold}.";
+    }
+    public void Validate()
+    {
+        Threshold = Mathf.Clamp01(Threshold);
+    }
 }
 
-// The following static class contains tools which I use for testing and debugging the pixel tracing algorithem and should not be needed for normal use. I recommend leaving this commented out for preformance unless needed.
+// The following static class contains tools which I use for testing and debugging the pixel tracing algorithm and should not be needed for normal use. I recommend leaving this comment out for performance unless needed.
 /*
 public static class PixelTracingDebugger
 {
