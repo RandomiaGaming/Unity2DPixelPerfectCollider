@@ -1,2 +1,30 @@
-/.git
-*.meta
+##TEMPLATE##
+
+# Auto Generated Folders
+.git/
+.vs/
+.idea/
+.vscode/
+
+# Build Folders
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+
+# Dependency Folders
+packages/
+vcpkg_installed/
+vcpkg/
+
+# Unity Folders
+Temp/
+Library/
+Logs/
+
+# File Extensions
+*.filters
+*.user
+*.suo
